@@ -7,3 +7,4 @@ out
 documents/*
 .model/*
 ./model/*
+.jarvis-memory.json
