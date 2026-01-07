@@ -1,0 +1,45 @@
+/* Importação completa da v4 */
+@import "tailwindcss";
+
+/* Configuração do Tema Jarvis direto no CSS */
+@theme {
+  --color-jarvis-bg: #0d0d0d;
+  --color-jarvis-panel: #1a1a1a;
+  --color-jarvis-border: #333333;
+  --color-jarvis-accent: #0070f3;
+  --color-jarvis-text: #e0e0e0;
+  --color-jarvis-dim: #888888;
+
+  --font-mono: 'Fira Code', 'Consolas', monospace;
+  --font-sans: 'Segoe UI', 'Inter', sans-serif;
+
+  --animate-blink: blink 1s step-end infinite;
+
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0; }
+  }
+}
+
+/* Estilos Globais */
+body {
+  background-color: var(--color-jarvis-bg);
+  color: var(--color-jarvis-text);
+  font-family: var(--font-sans);
+  overflow: hidden;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-track {
+  background-color: var(--color-jarvis-bg);
+}
+::-webkit-scrollbar-thumb {
+  background-color: var(--color-jarvis-border);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: #52525b; /* zinc-600 equivalent */
+}
