@@ -6,6 +6,7 @@ declare global {
     jarvis: {
       sendMessage: (message: string) => void
       onResponse: (callback: (chunk: string) => void) => void
+      transcribe: (buffer: ArrayBuffer) => string
     }
   }
 }

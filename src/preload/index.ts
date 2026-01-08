@@ -9,7 +9,8 @@ const jarvisAPI = {
     // Limpa ouvintes antigos para evitar duplicação em re-renders do React
     ipcRenderer.removeAllListeners('jarvis-chunk')
     ipcRenderer.on('jarvis-chunk', (_event, chunk) => callback(chunk))
-  }
+  },
+  transcribe: (buffer: ArrayBuffer) => ipcRenderer.invoke('transcribe', buffer)
 }
 
 // Use `contextBridge` APIs to expose Electron APIs to

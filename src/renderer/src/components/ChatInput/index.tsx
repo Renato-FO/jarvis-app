@@ -1,4 +1,4 @@
-import { useState, KeyboardEvent } from 'react'
+import { useState, KeyboardEvent, useRef } from 'react'
 import { MicIcon } from '../Icons'
 
 interface Props {
@@ -8,12 +8,57 @@ interface Props {
 
 export function ChatInput({ onSend, disabled }: Props) {
   const [input, setInput] = useState('')
+  const [isRecording, setIsRecording] = useState(false)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const chunksRef = useRef<BlobPart[]>([])
 
   const handleSend = () => {
     if (input.trim() && !disabled) {
       onSend(input)
       setInput('')
     }
+  }
+
+  const startRecording = async () => {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true
+      }
+    })
+
+    chunksRef.current = []
+
+    const recorder = new MediaRecorder(stream, {
+      mimeType: 'audio/webm'
+    })
+
+    recorder.ondataavailable = (e) => {
+      if (e.data.size > 0) chunksRef.current.push(e.data)
+    }
+
+    recorder.onstop = async () => {
+      const blob = new Blob(chunksRef.current, { type: 'audio/webm' })
+
+      const buffer = await blob.arrayBuffer()
+
+      const text = await window.jarvis.transcribe(buffer)
+
+      onSend(text)
+      console.log('teste')
+    }
+
+    recorder.start()
+    mediaRecorderRef.current = recorder
+    setIsRecording(true)
+  }
+
+  const stopRecording = () => {
+    handleSend()
+    mediaRecorderRef.current?.stop()
+    setIsRecording(false)
   }
 
   const handleKeyDown = (e: KeyboardEvent) => {
@@ -41,10 +86,12 @@ export function ChatInput({ onSend, disabled }: Props) {
 
       {/* Botão de Microfone */}
       <button
+        onClick={() => (isRecording ? stopRecording() : startRecording())}
         className={`
           h-11 w-11 flex items-center justify-center rounded transition-all
+          ${isRecording ? 'bg-red-600' : 'bg-black/30'}
         `}
-        title="Ativar Voz"
+        title={isRecording ? 'Parar gravação' : 'Ativar voz'}
       >
         <MicIcon />
       </button>

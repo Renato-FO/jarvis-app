@@ -2,6 +2,9 @@ import { app, shell, BrowserWindow, ipcMain, IpcMainEvent, session } from 'elect
 import { join } from 'path'
 import path from 'path'
 import fs from 'fs'
+import { writeFile, unlink } from 'fs/promises'
+import { spawn } from 'child_process'
+import os from 'os'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { Ollama } from 'ollama'
@@ -9,6 +12,7 @@ import { SYSTEM_PROMPT } from '../files/system_prompt'
 import { knowledgeBase } from './services/KnowledgeBase'
 
 var ollama = new Ollama({ host: 'http://127.0.0.1:11434' })
+const ffmpegPath = require('ffmpeg-static').replace('app.asar', 'app.asar.unpacked')
 var OLLAMA_MODEL = 'qwen3-coder:30b'
 
 function createWindow(): void {
@@ -154,11 +158,94 @@ app.whenReady().then(async () => {
     }
   })
 
+  // ---------------------------------------------------------
+  // MÓDULO DE TRANSCRIÇÃO (AUDIO PIPELINE)
+  // ---------------------------------------------------------
+  ipcMain.handle('transcribe', async (_event, buffer: ArrayBuffer) => {
+    const timestamp = Date.now()
+    const tempDir = os.tmpdir()
+
+    const inputWebm = path.join(tempDir, `jarvis-audio-${timestamp}.webm`)
+    const outputWav = path.join(tempDir, `jarvis-audio-${timestamp}.wav`)
+
+    try {
+      console.log(`[Audio] Recebido buffer de ${buffer.byteLength} bytes`)
+
+      await writeFile(inputWebm, Buffer.from(buffer))
+
+      console.log('[Audio] Convertendo WebM -> WAV (16kHz)...')
+
+      await new Promise<void>((resolve, reject) => {
+        const ffmpeg = spawn(ffmpegPath, [
+          '-i',
+          inputWebm,
+          '-ar',
+          '16000',
+          '-ac',
+          '1',
+          '-c:a',
+          'pcm_s16le',
+          outputWav
+        ])
+
+        ffmpeg.on('close', (code) => {
+          if (code === 0) resolve()
+          else reject(new Error(`FFmpeg falhou com código ${code}`))
+        })
+      })
+
+      const whisperPath = path.join(process.cwd(), 'model/Release', 'whisper-cli.exe')
+      const modelPath = path.join(process.cwd(), 'model/Release', 'ggml-base.bin')
+
+      console.log('[Audio] Rodando Whisper...')
+
+      const transcription = await new Promise<string>((resolve, reject) => {
+        let output = ''
+
+        const proc = spawn(whisperPath, [
+          '-m',
+          modelPath,
+          '-f',
+          outputWav,
+          '--language',
+          'pt',
+          '--beam-size',
+          '1',
+          '--no-timestamps'
+        ])
+
+        proc.stdout.on('data', (data) => {
+          const text = data.toString()
+          output += text
+        })
+
+        proc.on('close', (code) => {
+          if (code !== 0) {
+            console.error(`Whisper exit code: ${code}`)
+            if (!output) reject(new Error(`Whisper falhou: ${code}`))
+          }
+          resolve(output.trim())
+        })
+      })
+
+      return transcription
+    } catch (error: any) {
+      console.error('[Transcribe Error]', error)
+      return `[Erro de Áudio]: ${error.message}`
+    } finally {
+      try {
+        await unlink(inputWebm).catch(() => {})
+        await unlink(outputWav).catch(() => {})
+        console.log('[Audio] Arquivos temporários limpos.')
+      } catch (e) {
+        console.error('[Audio] Falha ao limpar temporários', e)
+      }
+    }
+  })
+
   printStartupBanner()
 
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
-    console.log('here', permission, callback)
-    // Se o pedido for 'media' (microfone/camera), autoriza automaticamente
     if (permission === 'media') {
       return callback(true)
     }
