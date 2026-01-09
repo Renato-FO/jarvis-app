@@ -1,4 +1,5 @@
 import { Message } from '../../types/chat'
+import { MarkdownRenderer } from '../MarkdownRenderer' // <--- Importe o componente
 
 interface Props {
   message: Message
@@ -6,6 +7,10 @@ interface Props {
 
 export function MessageBubble({ message }: Props) {
   const isJarvis = message.sender === 'jarvis'
+
+  // Truque Visual: Se estiver fazendo streaming, adicionamos um cursor falso ao final do texto
+  // Isso faz com que o cursor apareça "dentro" do Markdown (ex: dentro do bloco de código)
+  const displayContent = message.isStreaming ? message.text + ' ▍' : message.text
 
   return (
     <div className={`flex w-full ${isJarvis ? 'justify-start' : 'justify-end'}`}>
@@ -19,17 +24,17 @@ export function MessageBubble({ message }: Props) {
           }
         `}
       >
+        {/* Label do Remetente */}
         <span
-          className={`block text-[10px] font-bold uppercase tracking-wider mb-1 ${isJarvis ? 'text-gray-500' : 'text-blue-200'}`}
+          className={`block text-[10px] font-bold uppercase tracking-wider mb-2 ${isJarvis ? 'text-gray-500' : 'text-blue-200'}`}
         >
           {isJarvis ? 'J.A.R.V.I.S.' : 'COMMANDER'}
         </span>
 
-        <div className="whitespace-pre-wrap">
-          {message.text}
-          {message.isStreaming && (
-            <span className="inline-block w-2 h-4 ml-1 align-middle bg-green-400 animate-blink" />
-          )}
+        {/* Renderização Rica (Markdown + Cores) */}
+        {/* Removemos whitespace-pre-wrap porque o MarkdownRenderer já trata isso */}
+        <div>
+          <MarkdownRenderer content={displayContent} />
         </div>
       </div>
     </div>

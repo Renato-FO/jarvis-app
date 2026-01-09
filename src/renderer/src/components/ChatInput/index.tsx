@@ -47,7 +47,6 @@ export function ChatInput({ onSend, disabled }: Props) {
       const text = await window.jarvis.transcribe(buffer)
 
       onSend(text)
-      console.log('teste')
     }
 
     recorder.start()
