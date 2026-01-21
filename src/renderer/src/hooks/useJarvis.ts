@@ -40,6 +40,8 @@ export function useJarvis() {
   const sendMessage = (text: string) => {
     if (!text.trim()) return
 
+    console.log(messages, 'UseJarvis')
+
     // 1. Adiciona mensagem do usuário na UI
     const userMsg: Message = {
       id: Date.now().toString(),
@@ -52,7 +54,7 @@ export function useJarvis() {
     setIsProcessing(true)
 
     // 2. Dispara para o Backend
-    window.jarvis.sendMessage(text)
+    window.jarvis.sendMessage(text, messages)
   }
 
   return { messages, sendMessage, isProcessing }

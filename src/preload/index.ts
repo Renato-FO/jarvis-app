@@ -2,8 +2,9 @@ import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 
 const jarvisAPI = {
-  sendMessage: (message: string): void => {
-    ipcRenderer.send('ask-jarvis', message)
+  sendMessage: (message: string, messages: string[]): void => {
+    console.log(message, messages, 'Primeira parte')
+    ipcRenderer.send('ask-jarvis', message, messages)
   },
   onResponse: (callback: (chunk: string) => void): void => {
     // Limpa ouvintes antigos para evitar duplicação em re-renders do React

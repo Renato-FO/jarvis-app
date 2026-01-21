@@ -32,7 +32,6 @@ export function MessageBubble({ message }: Props) {
         </span>
 
         {/* Renderização Rica (Markdown + Cores) */}
-        {/* Removemos whitespace-pre-wrap porque o MarkdownRenderer já trata isso */}
         <div>
           <MarkdownRenderer content={displayContent} />
         </div>

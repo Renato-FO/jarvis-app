@@ -114,13 +114,13 @@ app.whenReady().then(async () => {
   })
 
   // JARVIS Communication
-  ipcMain.on('ask-jarvis', async (event: IpcMainEvent, userMessage: string) => {
+  ipcMain.on('ask-jarvis', async (event: IpcMainEvent, userMessage: string, messages) => {
     try {
       const relevantContext = await knowledgeBase.searchRelevantContext(userMessage)
 
-      if (relevantContext) {
-        console.log('Contexto Encontrado:', relevantContext)
-      }
+      // if (relevantContext) {
+      //   console.log('Contexto Encontrado:', relevantContext)
+      // }
 
       const systemMessage = `${SYSTEM_PROMPT}
       CONTEXTO RECUPERADO (USE ISSO COMO VERDADE ABSOLUTA):
@@ -134,15 +134,25 @@ app.whenReady().then(async () => {
         day: 'numeric'
       })
 
+      messages = messages.map((msg) => {
+        return {
+          role: msg.sender === 'user' ? 'user' : 'assistant',
+          content: msg.text
+        }
+      })
+
+      const finalMessages = [
+        {
+          role: 'system',
+          content: `${systemMessage}\n\nDATA DO SISTEMA: ${today}. Considere esta data para responder sobre versões e obsolescência.`
+        },
+        ...messages,
+        { role: 'user', content: userMessage }
+      ]
+
       const response = await ollama.chat({
         model: OLLAMA_MODEL,
-        messages: [
-          {
-            role: 'system',
-            content: `${systemMessage}\n\nDATA DO SISTEMA: ${today}. Considere esta data para responder sobre versões e obsolescência.`
-          },
-          { role: 'user', content: userMessage }
-        ],
+        messages: finalMessages,
         stream: true
       })
 
