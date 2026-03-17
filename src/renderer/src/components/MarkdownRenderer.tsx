@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import ReactMarkdown from 'react-markdown'
 import rehypeHighlight from 'rehype-highlight'
 import 'highlight.js/styles/atom-one-dark.css'
@@ -6,7 +7,7 @@ interface Props {
   content: string
 }
 
-export function MarkdownRenderer({ content }: Props) {
+export const MarkdownRenderer = memo(function MarkdownRenderer({ content }: Props) {
   return (
     <div className="markdown-body max-w-none text-sm text-slate-100">
       <ReactMarkdown
@@ -55,4 +56,6 @@ export function MarkdownRenderer({ content }: Props) {
       </ReactMarkdown>
     </div>
   )
-}
+})
+
+MarkdownRenderer.displayName = 'MarkdownRenderer'

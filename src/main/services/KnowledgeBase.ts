@@ -441,21 +441,30 @@ export class KnowledgeBase {
 
       const filteredHits =
         retrievalMode === 'fact'
-          ? rankedHits
-              .filter(
-                (entry) =>
-                  entry.keywordScore.overlapCount >= 3 || entry.keywordScore.score >= 24
-              )
-              .slice(0, 3)
-          : rankedHits.slice(0, SEARCH_RESULT_LIMIT)
+          ? (() => {
+              const strictHits = rankedHits
+                .filter(
+                  (entry) =>
+                    entry.keywordScore.overlapCount >= 3 || entry.keywordScore.score >= 24
+                )
+                .slice(0, 3)
 
-      if (retrievalMode === 'fact' && filteredHits.length === 0) {
-        return {
-          contextText: '',
-          sources: [],
-          retrievalMode
-        }
-      }
+              if (strictHits.length > 0) {
+                return strictHits
+              }
+
+              const broaderHits = rankedHits
+                .filter(
+                  (entry) =>
+                    entry.keywordScore.overlapCount >= 1 ||
+                    entry.keywordScore.score >= 8 ||
+                    entry.similarity >= 0.18
+                )
+                .slice(0, 4)
+
+              return broaderHits.length > 0 ? broaderHits : rankedHits.slice(0, 3)
+            })()
+          : rankedHits.slice(0, SEARCH_RESULT_LIMIT)
 
       const contextBlocks: string[] = []
       const sources: RetrievedContextSource[] = []

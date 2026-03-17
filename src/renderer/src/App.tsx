@@ -42,10 +42,15 @@ function App() {
   const endRef = useRef<HTMLDivElement>(null)
   const safeMessages = Array.isArray(messages) ? messages : []
   const safeDocuments = Array.isArray(state.documents) ? state.documents : []
+  const interactionCount = safeMessages.reduce(
+    (count, message) => (message.sender === 'user' ? count + 1 : count),
+    0
+  )
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [safeMessages, activePanel])
+    if (activePanel !== 'dialogue') return
+    endRef.current?.scrollIntoView({ behavior: isProcessing ? 'auto' : 'smooth' })
+  }, [safeMessages, activePanel, isProcessing])
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -205,6 +210,7 @@ function App() {
               indexedDocuments={state.stats.indexedDocuments}
               totalChunks={state.stats.totalChunks}
               statusLabel={neuralStatus}
+              interactionCount={interactionCount}
             />
           </div>
 

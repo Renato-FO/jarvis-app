@@ -1,178 +1,136 @@
 # Improvements for jarvis-app
 
-## Visão atual
+## Visao atual (2026-03-17)
 
-O Jarvis está evoluindo de um chat local para um cérebro documental com memória treinável, ingestão manual de arquivos, RAG local e interface centrada em um núcleo visual. A prioridade deixou de ser apenas "conversar" e passou a ser:
+O Jarvis evoluiu de um chat local para um nucleo documental com memoria treinavel, runtime local de IA e interface centrada no `Central Core`.
 
-- abrir rápido
-- treinar documentos dentro do app
-- recuperar contexto confiável
-- responder com base nas fontes
-- ter presença visual forte e responsiva
+Prioridades ativas:
 
-## Direção de produto
+- abrir rapido
+- responder com mais estabilidade
+- reduzir custo de processamento durante streaming
+- recuperar contexto util com mais confianca
+- manter uma experiencia visual forte sem comprometer performance
 
-### Home
+## Direcao de produto
 
-- A tela inicial deve ser dominada pelo `Central Core`.
-- `Memory Bay`, `Dialogue Layer` e `System Pulse` devem abrir como camadas sobre o palco principal.
-- A home deve ficar limpa, sem cards fixos desnecessários abaixo do núcleo.
+### Home e experiencia
 
-### Memória
+- O palco principal deve continuar dominado pelo `Central Core`.
+- `Memory Bay`, `Dialogue Layer` e `System Pulse` seguem como camadas da mesma experiencia.
+- A interface deve continuar limpa, com foco em acao e leitura rapida do estado do sistema.
 
-- O usuário envia documentos pela interface.
-- O app prepara o arquivo para IA antes do chunking e embeddings.
-- O estado da memória precisa ser visível: pronto, processando, erro, reindexação necessária.
-- O sistema deve deixar claro quais documentos estão realmente indexados no RAG atual.
+### Memoria e RAG
+
+- Ingestao manual continua sendo o fluxo principal.
+- Pipeline de preparo para IA antes de chunking/embeddings.
+- Transparencia do estado por documento (pronto, processando, erro, reindex necessario).
+- Recuperacao contextual com fallback robusto, evitando respostas vazias.
 
 ### Conversa
 
-- O chat abre como drawer lateral.
-- Em desktop, ocupa metade da área útil.
-- Em telas pequenas, deve ocupar a largura disponível sem quebrar.
-- O histórico e o contexto enviados ao modelo precisam ter orçamento controlado.
+- Chat em drawer lateral responsivo.
+- Fluxo de streaming otimizado para reduzir travamento.
+- Respostas devem alternar entre:
+  - documental com `Fontes:` quando houver contexto
+  - conhecimento geral util quando nao houver contexto confiavel
 
 ### Visual
 
-- O centro da experiência é um cérebro holográfico animado.
-- A interface deve parecer um organismo computacional, não um dashboard genérico.
-- O visual precisa reagir a estados como idle, treinamento, resposta e erro.
+- Nucleo holografico maior e com mais profundidade.
+- Reatividade visual por interacao do usuario.
+- Cor temporaria durante atividade e retorno ao estado base ao concluir.
+- Sem pulsacao forcada, preservando legibilidade e custo controlado.
 
-## Melhorias já implementadas
+## Melhorias implementadas (consolidado)
 
-### UI e experiência
+### UX/UI
 
-- Home reorganizada com foco no `Central Core`.
-- `Memory Bay` e `Dialogue Layer` movidos para camadas sobrepostas.
-- Chat com meia largura em desktop e altura útil total.
-- Responsividade revisada para telas menores.
-- Núcleo visual separado em componente dedicado inspirado em `brain.html`.
-- Velocidade do cérebro ajustada conforme estado de resposta ou treinamento.
+- Home reorganizada e drawers estabilizados.
+- Responsividade refinada em diferentes breakpoints.
+- Nucleo visual separado em componente dedicado para evolucao continua.
 
-### Pipeline de documentos
+### Nucleo holografico
 
-- Ingestão manual dentro do app.
-- Suporte a múltiplos formatos, incluindo `.pdf`, `.md`, `.txt`, `.json`, `.csv` e código.
-- Etapa de preparação do documento para IA antes do RAG.
-- Geração de versão tratada em `AppData/Roaming/jarvis-app/knowledge/prepared`.
-- Chunking mais seguro para arquivos grandes.
-- Controle de orçamento para embeddings e para o contexto enviado ao chat.
+- Escala visual ampliada no palco.
+- Mais aneis, conexoes e particulas.
+- Troca de paleta por interacao.
+- Remocao da pulsacao.
+- Retorno automatico para cor base ao finalizar resposta/treino.
+
+### RAG, grounding e fallback
+
+- Prompt atualizado para evitar placeholder vazio.
+- `Fontes:` somente quando contexto recuperado foi realmente usado.
+- Retrieval factual com fallback progressivo para reduzir casos sem contexto util.
 
 ### Runtime e estabilidade
 
-- Validação do Ollama no boot.
-- Tentativa de subir `ollama serve` automaticamente quando necessário.
-- Validação de modelos de chat e embeddings.
-- Status de runtime exposto para a UI.
-- Instrumentação de erro mais explícita no fluxo de ingestão, retrieval e chat.
-- Fallback de persistência para JSON quando o formato antigo falhava.
+- Validacao de ambiente Ollama no boot.
+- Tentativa automatica de subida do servico quando necessario.
+- Logs e diagnostico com mais contexto.
 
-### RAG
+### Performance
 
-- Prompt reforçado para respostas mais fiéis ao contexto.
-- Respostas documentais orientadas por fontes.
-- Logging do contexto recuperado enviado ao modelo.
-- Heurísticas para perguntas factuais e listadas.
-- Migração da camada de RAG para LangChain.
-
-## Arquitetura atual do RAG
-
-O RAG passou a usar LangChain localmente:
-
-- `Document` do LangChain
-- `MarkdownTextSplitter` e `RecursiveCharacterTextSplitter`
-- `OllamaEmbeddings`
-- `MemoryVectorStore`
-- persistência vetorial em JSON
-
-Isso substitui a lógica antiga baseada em Orama para ingestão e retrieval.
+- Streaming com flush em lote no renderer.
+- Autoscroll otimizado para nao animar em loop durante streaming.
+- Render de streaming com texto simples e markdown completo ao final.
+- Memoizacao de `HolographicBrain`, `MessageBubble` e `MarkdownRenderer`.
+- Canvas otimizado com:
+  - limite de DPR
+  - densidade adaptativa
+  - throttle de frame (~45 FPS)
+  - skip de trabalho com aba oculta
 
 ## Problemas ainda abertos
 
-### 1. Qualidade do retrieval factual
+### 1. Carga em hardware mais fraco durante respostas longas
 
-Mesmo com melhorias, o retrieval ainda precisa ficar mais preciso para perguntas documentais objetivas, especialmente quando existem PDFs grandes e muitos materiais genéricos na base.
-
-Melhorias desejadas:
-
-- filtro mais forte por documento e domínio
-- busca híbrida melhor
-- reranking semântico mais confiável
-- possibilidade de filtrar por coleção ou documento
-
-### 2. Grounding da resposta
-
-O modelo ainda pode responder de forma genérica quando o contexto recuperado não é o ideal.
+Mesmo com melhorias, ainda pode haver picos em maquinas com GPU/CPU limitadas.
 
 Melhorias desejadas:
 
-- modo "strict factual"
-- resposta por extração/paráfrase fiel para listas e contagens
-- recusa explícita quando não houver resposta direta no contexto
+- modo economico automatico durante `isProcessing`
+- reducao adicional de densidade visual enquanto stream estiver ativo
+- ajuste dinamico de flush interval no chat
 
-### 3. Transparência da memória
+### 2. Qualidade de retrieval factual em bases heterogeneas
 
-Hoje a memória existe, mas o usuário ainda não vê tudo o que o sistema está usando.
+Ainda ha espaco para melhorar precision quando a base contem materiais grandes e genericos.
 
 Melhorias desejadas:
 
-- preview do documento preparado
-- preview dos chunks
-- exibição das fontes usadas na resposta diretamente na UI
-- informação clara de reindexação necessária após migração de engine
+- filtros por documento/colecao
+- estrategia hibrida (keyword + semantica)
+- reranking mais forte
 
-## Próximas melhorias prioritárias
+### 3. Transparencia da memoria para o usuario
 
-### Prioridade 1: fechar bem o novo RAG em LangChain
+Melhorias desejadas:
 
-- validar reindexação completa da base
-- melhorar retrieval factual
-- mostrar melhor as fontes na interface
-- impedir respostas inventadas quando o contexto for fraco
+- preview de documento preparado e chunks
+- fontes usadas visiveis direto na UI de resposta
+- status de reindexacao mais explicito no fluxo
 
-### Prioridade 2: tornar o Memory Bay mais operacional
+## Prioridades recomendadas (proxima fase)
 
-- remover documento
-- reprocessar documento
-- limpar base
-- mostrar status real de indexação por documento
-- destacar arquivos preparados e chunks
+### Prioridade 1: estabilizacao final de performance
 
-### Prioridade 3: consolidar a camada visual
+- implementar modo economico do nucleo durante resposta
+- revisar tamanho de lote de streaming por perfil de maquina
+- medir FPS/tempo de frame em cenarios longos
 
-- lapidar mais o cérebro holográfico
-- melhorar abertura dos drawers
-- integrar melhor `System Pulse`, status do Ollama e status da memória
+### Prioridade 2: qualidade de resposta documental
 
-### Prioridade 4: preparar crescimento do produto
+- evoluir ranking factual
+- exibir fontes na interface
+- reduzir chance de respostas genericas quando houver contexto util
 
-- coleções
-- tags
-- filtros por documento
-- comparação entre fontes
-- voz
+### Prioridade 3: operacao completa da memoria
 
-## Roadmap sugerido
-
-### Fase 1
-
-- consolidar home com `Central Core`
-- consolidar ingestão manual
-- estabilizar runtime do Ollama
-- estabilizar RAG em LangChain
-
-### Fase 2
-
-- melhorar retrieval factual e grounding
-- mostrar fontes e contexto na UI
-- dar controle real da memória ao usuário
-
-### Fase 3
-
-- coleções, filtros e análise documental
-- voz
-- explicabilidade mais forte do cérebro
+- remover/reprocessar/limpar documentos
+- painel real de prepared/chunks por documento
 
 ## Resultado esperado
 
-Se essa direção for seguida, o Jarvis deixa de ser só um chat bonito com documentos anexados e passa a ser um cérebro documental local, treinável, explicável e visualmente coerente com a proposta do produto.
+Com essa trilha, o Jarvis fica mais fluido durante resposta, mais confiavel em grounding documental e mais consistente como "cerebro documental local" para uso diario.

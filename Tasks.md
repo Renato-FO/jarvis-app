@@ -1,205 +1,138 @@
 # Tasks
 
-## Objetivo desta consolidação
+## Objetivo desta consolidacao
 
-Este arquivo resume o que foi feito ao longo da conversa no `jarvis-app`, o estado atual do produto e os próximos passos mais importantes.
+Este arquivo resume o que foi implementado no `jarvis-app`, o estado atual e os proximos passos mais importantes.
 
 ## O que foi implementado
 
-### 1. Redesenho da experiência principal
+### 1. Experiencia principal da home
 
-- A home foi reposicionada para girar em torno do `Central Core`.
-- `Memory Bay`, `Dialogue Layer` e `System Pulse` passaram a ser camadas sobrepostas.
-- O chat deixou de ser um painel fixo e passou a abrir como drawer.
-- O drawer do chat foi ajustado para ocupar metade da área útil em desktop.
-- O chat passou a usar 100% da altura útil do painel.
-- Foram removidos cards fixos sob o núcleo para deixar a home mais limpa.
+- Home centrada no `Central Core`.
+- `Memory Bay`, `Dialogue Layer` e `System Pulse` como camadas sobrepostas.
+- Chat em drawer lateral (metade da area util em desktop).
+- Limpeza visual da home com remocao de cards fixos abaixo do nucleo.
 
 ### 2. Responsividade
 
-- O layout foi ajustado para telas menores.
-- O núcleo e os drawers passaram a responder melhor em larguras pequenas.
-- O composer do chat foi ajustado para não quebrar em resoluções compactas.
+- Ajustes para desktop, tablet e mobile.
+- Melhor comportamento de drawers e composer em larguras pequenas.
 
-### 3. Núcleo visual
+### 3. Nucleo visual holografico
 
-- Foi criado um componente visual dedicado inspirado em `brain.html`.
-- O cérebro holográfico passou a ter controle de velocidade conforme o estado:
-  - idle
-  - training
-  - responding
-- O visual foi isolado em componente próprio para facilitar evolução.
+- Componente visual dedicado em `HolographicBrain.tsx`.
+- Nucleo ampliado para maior presenca no palco.
+- Mais aneis/camadas, conexoes e particulas.
+- Troca de cor por interacao do usuario (pergunta/envio).
+- Cor temporaria durante processamento/treino e retorno ao tom base ao finalizar.
+- Pulsacao removida por solicitacao.
 
-### 4. Ingestão de documentos dentro do app
+### 4. Ingestao de documentos no app
 
-- O app deixou de depender de carregamento automático de documentos no boot.
-- A ingestão passou a acontecer pela interface.
-- O pipeline passou a aceitar múltiplos formatos:
-  - PDF
-  - MD
-  - TXT
-  - JSON
-  - CSV
-  - JS/TS/JSX/TSX
-  - HTML/CSS/XML/YAML
+- Ingestao manual pela interface.
+- Suporte a multiplos formatos: PDF, MD, TXT, JSON, CSV, JS/TS/JSX/TSX, HTML/CSS/XML/YAML.
+- Pipeline de preparo para IA antes de chunking/embeddings.
 
-### 5. Preparação de arquivos para IA
+### 5. RAG e retrieval (LangChain)
 
-- Foi criada uma etapa dedicada de preparação de documentos antes do RAG.
-- O sistema agora:
-  - extrai o conteúdo
-  - limpa ruído
-  - reorganiza o texto
-  - gera versão preparada para IA
-  - só depois faz chunking e embeddings
-- A versão preparada é salva localmente em pasta dedicada.
+- Migracao da camada de retrieval para LangChain (`Document`, splitters, embeddings e `MemoryVectorStore`).
+- Persistencia vetorial em JSON.
+- Modo factual com heuristicas de ranking.
+- IDs de contexto `CTX-*` para rastreabilidade.
 
-### 6. Proteções para arquivos grandes
+### 6. Grounding e resposta
 
-- O pipeline passou a quebrar chunks grandes de forma mais segura.
-- O contexto enviado ao modelo passou a ter orçamento máximo.
-- O histórico de conversa enviado ao modelo também passou a ser limitado.
-- Foram adicionados fallbacks para evitar erros com conteúdo indefinido.
+- Prompt reforcado para usar contexto recuperado quando houver resposta direta.
+- Ajuste para evitar resposta vazia no formato:
+  - `Nenhum contexto adicional encontrado.`
+  - `Fontes:`
+- Quando nao houver contexto confiavel, resposta com conhecimento geral util.
+- `Fontes:` apenas quando houver uso real de contexto recuperado.
+- Fallback progressivo no retrieval factual:
+  - filtro estrito
+  - ampliacao de criterio
+  - melhores hits disponiveis
 
-### 7. Ollama e runtime
+### 7. Runtime e estabilidade
 
-- Foi implementada validação de runtime do Ollama.
-- O app verifica:
-  - se o servidor está acessível
-  - se os modelos existem
-  - se os modelos foram aquecidos
-- Quando necessário, tenta iniciar `ollama serve`.
-- O status do runtime foi exposto para a interface.
+- Validacao do Ollama no boot (servidor, modelos e aquecimento).
+- Tentativa de iniciar `ollama serve` quando necessario.
+- Status de runtime exposto para a UI.
+- Instrumentacao de erro com contexto mais detalhado.
 
-### 8. Instrumentação e debug
+### 8. Performance (rodada atual)
 
-- Erros de ingestão passaram a mostrar:
-  - etapa
-  - arquivo
-  - extensão
-  - tamanho bruto
-  - tamanho preparado
-  - quantidade de chunks
-  - stack
-- Erros do fluxo de chat e embeddings também passaram a ser logados com mais contexto.
-- Foi adicionado `console.log` do contexto recuperado para análise do RAG.
+- Streaming do chat em lotes curtos para reduzir rerender por chunk.
+- `HolographicBrain` otimizado com:
+  - `memo`
+  - limite de DPR
+  - densidade adaptativa de elementos
+  - throttle de frame (~45 FPS)
+  - pausa quando a aba nao esta visivel
+- Autoscroll otimizado:
+  - `auto` durante streaming
+  - `smooth` fora de streaming
+- Render de streaming do Jarvis mais leve:
+  - texto simples durante transmissao
+  - markdown completo ao finalizar
+- `MessageBubble` e `MarkdownRenderer` memoizados.
 
-### 9. Persistência
+## Problemas diagnosticados e status
 
-- A persistência antiga em `dpack` apresentou falha.
-- Foi implementado fallback seguro para JSON.
-- Depois disso, a arquitetura evoluiu e a camada de memória foi refeita com LangChain.
+### 1. Resposta documental incorreta por retrieval
 
-### 10. Migração do RAG para LangChain
+- Status: parcialmente mitigado.
+- Melhorias aplicadas em ranking e fallback, mas ainda requer calibracao fina em bases grandes.
 
-- A implementação antiga de retrieval foi substituída.
-- O sistema agora usa:
-  - `Document`
-  - `MarkdownTextSplitter`
-  - `RecursiveCharacterTextSplitter`
-  - `OllamaEmbeddings`
-  - `MemoryVectorStore`
-- A persistência vetorial passou a usar JSON em arquivo próprio.
-- Quando existe manifest antigo sem índice vetorial LangChain, os documentos são marcados como necessitando reindexação.
+### 2. Resposta vazia sem contexto util
 
-### 11. Grounding e fontes
+- Status: corrigido no fluxo principal.
+- O modelo nao deve mais responder com placeholder vazio de contexto/fontes.
 
-- O prompt foi reforçado para:
-  - usar o contexto recuperado como fonte principal
-  - não generalizar quando houver resposta direta
-  - preservar listas e contagens do documento
-  - finalizar com `Fontes:`
-- O contexto recuperado passou a carregar IDs `CTX-*`.
-- Foi introduzido modo factual para perguntas objetivas.
+### 3. Travamento durante resposta em streaming
 
-## Problemas diagnosticados durante a conversa
-
-### 1. Respostas erradas apesar de documento correto existir
-
-Foi verificado que o problema principal não era o formato do arquivo nem ausência de ingestão, e sim a recuperação de contexto errada.
-
-Exemplo observado:
-
-- pergunta sobre `SuccessFactors metadata refresh`
-- contexto recuperado trazia `SAPUI5.pdf` e `solman.pdf`
-- o documento correto existia na base preparada
-
-Conclusão:
-
-- o gargalo estava na etapa de retrieval/ranking
-
-### 2. Persistência antiga falhando
-
-Foi identificado erro explícito na serialização com `dpack` durante `save`.
-
-### 3. Vários pontos sensíveis a `undefined`
-
-Foram feitas proteções em:
-
-- ingestão
-- retrieval
-- histórico de chat
-- renderer
-- streaming
+- Status: melhorado.
+- Houve reducao de custo em render e canvas; ainda pode haver carga dependendo do hardware/base.
 
 ## Estado atual
 
-Hoje o app já está nesta direção:
+- Home centrada no nucleo e camadas operacionais.
+- Ingestao manual e preparo de documentos para IA.
+- RAG em LangChain com persistencia JSON.
+- Runtime do Ollama validado e monitorado.
+- Nucleo visual mais forte e mais reativo.
+- Streaming mais estavel em performance.
 
-- home centrada no núcleo
-- drawers laterais
-- ingestão manual
-- preparação de arquivos para IA
-- runtime do Ollama validado
-- RAG migrado para LangChain
-- debug muito mais explícito
-
-## Pendências e próximos passos
+## Proximos passos prioritarios
 
 ### Curto prazo
 
-- reindexar os documentos já existentes na base após a migração para LangChain
-- validar novamente a pergunta factual do SuccessFactors
-- medir se o retrieval agora está puxando o documento correto
+- Medir latencia/CPU com perfilador durante respostas longas.
+- Ajustar `STREAM_FLUSH_INTERVAL_MS` por hardware (ex: 40 -> 60/80ms quando necessario).
+- Aplicar "modo economico" do nucleo durante `isProcessing` para maquinas mais fracas.
 
-### Próximo passo técnico forte
+### Produto e memoria
 
-- melhorar mais o ranking factual no LangChain
-- considerar filtro por documento ou coleção
-- exibir fontes usadas diretamente na UI
+- Tornar `Memory Bay` operacional (remover, reprocessar, limpar, visualizar chunks/prepared).
+- Exibir fontes usadas diretamente na UI de resposta.
 
-### Próximo passo de produto
+### Qualidade de retrieval
 
-- tornar o `Memory Bay` operacional de verdade:
-  - remover documento
-  - reprocessar documento
-  - limpar memória
-  - ver chunks e documento preparado
-
-### Próximo passo visual
-
-- lapidar ainda mais o cérebro holográfico
-- integrar melhor status de memória e Ollama ao núcleo
-- preparar terreno para voz
+- Melhorar ranking factual com filtros por documento/colecao.
+- Evoluir para estrategia hibrida (keyword + semantica + reranking).
 
 ## Arquivos mais impactados
 
 - `src/renderer/src/App.tsx`
 - `src/renderer/src/assets/main.css`
 - `src/renderer/src/components/HolographicBrain.tsx`
+- `src/renderer/src/components/MessageBubble/index.tsx`
+- `src/renderer/src/components/MarkdownRenderer.tsx`
 - `src/renderer/src/hooks/useJarvis.ts`
-- `src/renderer/src/hooks/useKnowledgeBase.ts`
 - `src/main/index.ts`
-- `src/main/services/OllamaService.ts`
-- `src/main/services/DocumentFormatter.ts`
 - `src/main/services/KnowledgeBase.ts`
 - `src/files/system_prompt.ts`
 
-## Observação importante
+## Validacao tecnica desta rodada
 
-Como o RAG foi migrado para LangChain, o estado antigo da memória não deve ser tratado como confiável sem reindexação. O fluxo correto agora é:
-
-- reiniciar o app
-- reimportar os documentos importantes
-- validar o contexto recuperado
-- só depois avaliar a qualidade final das respostas documentais
+- `npm.cmd run typecheck` executado com sucesso apos as alteracoes.

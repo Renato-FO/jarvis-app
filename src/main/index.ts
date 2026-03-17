@@ -173,6 +173,8 @@ app
 
         stage = 'search-relevant-context'
         const relevantContext = await knowledgeBase.searchRelevantContext(userMessage)
+        const hasRecoveredContext =
+          relevantContext.sources.length > 0 && relevantContext.contextText.trim().length > 0
         const sourceLedger =
           relevantContext.sources.length > 0
             ? relevantContext.sources
@@ -189,13 +191,14 @@ app
             'sources:',
             sourceLedger,
             'context:',
-            relevantContext.contextText || 'Nenhum contexto adicional encontrado.'
+            relevantContext.contextText || '[sem contexto documental recuperado]'
           ].join('\n')
         )
 
-        const systemMessage = `${SYSTEM_PROMPT}
+        const systemMessage = hasRecoveredContext
+          ? `${SYSTEM_PROMPT}
 CONTEXTO RECUPERADO (USE ISSO COMO VERDADE ABSOLUTA QUANDO HOUVER RESPOSTA DIRETA):
-${relevantContext.contextText || 'Nenhum contexto adicional encontrado.'}
+${relevantContext.contextText}
 
 MODO DE RECUPERACAO:
 ${relevantContext.retrievalMode}
@@ -207,6 +210,13 @@ REGRAS ADICIONAIS DE RESPOSTA:
 
 MAPA DE FONTES DISPONIVEIS:
 ${sourceLedger}
+`
+          : `${SYSTEM_PROMPT}
+NESTA PERGUNTA, nenhum trecho documental foi recuperado com confianca suficiente.
+Responda normalmente com conhecimento geral util.
+Nao diga ao usuario que "nenhum contexto foi encontrado".
+Nao inclua a secao "Fontes:" nesta resposta.
+Se houver incerteza, deixe isso claro de forma objetiva.
 `
 
         const today = new Date().toLocaleDateString('pt-BR', {
