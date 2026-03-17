@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>J.A.R.V.I.S. Interface Holográfica</title>
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+      background-color: #050508;
+      /* Fundo escuro levemente azulado para contraste */
+      font-family: 'Courier New', Courier, monospace;
+      color: #ffaa00;
+    }
+
+    canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+    }
+
+    .scanline {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: linear-gradient(to bottom, rgba(255, 255, 255, 0), rgba(255, 255, 255, 0) 50%, rgba(255, 170, 0, 0.05) 50%, rgba(255, 170, 0, 0.05));
+      background-size: 100% 4px;
+      pointer-events: none;
+      z-index: 10;
+    }
+  </style>
+  <!-- Importando Three.js via CDN -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+</head>
+
+<body>
+  <div class="scanline"></div>
+
+  <script>
+    // Configuração Básica do Three.js
+    const scene = new THREE.Scene();
+    // Adicionando um leve fog para profundidade
+    scene.fog = new THREE.FogExp2(0x050508, 0.0015);
+
+    const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.set(0, 0, 350);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(window.devicePixelRatio);
+    document.body.appendChild(renderer.domElement);
+
+    // Controles de Órbita (Mouse)
+    const controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.05;
+    controls.autoRotate = true;
+    controls.autoRotateSpeed = 0.5;
+
+    // Materiais Base (Laranja/Dourado Brilhante Holográfico)
+    const colorPrimary = 0xff7700; // Laranja magnético
+    const colorSecondary = 0xff8800; // Núcleo dourado/laranja
+    const colorTertiary = 0xff2200; // Vermelho escuro
+
+    const materialParticle = new THREE.PointsMaterial({
+      color: colorPrimary,
+      size: 1.2,
+      transparent: true,
+      opacity: 0.7,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false
+    });
+
+    const materialLine = new THREE.LineBasicMaterial({
+      color: colorPrimary,
+      transparent: true,
+      opacity: 0.15,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false
+    });
+
+    // Grupo Principal
+    const brainGroup = new THREE.Group();
+    scene.add(brainGroup);
+
+    // 1. Núcleo (Energia central de cor intensa)
+    const coreGeo = new THREE.SphereGeometry(25, 64, 64);
+    const coreParticles = new THREE.Points(coreGeo, new THREE.PointsMaterial({
+      color: colorSecondary,
+      size: 2.5,
+      transparent: true,
+      opacity: 1.0,
+      blending: THREE.AdditiveBlending
+    }));
+    brainGroup.add(coreParticles);
+
+    const innerCoreMesh = new THREE.Mesh(
+      new THREE.IcosahedronGeometry(18, 2),
+      new THREE.MeshBasicMaterial({ color: colorSecondary, wireframe: true, transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending })
+    );
+    brainGroup.add(innerCoreMesh);
+
+    // 2. Camadas Intermediárias (Mais complexas)
+    const midGeo1 = new THREE.IcosahedronGeometry(60, 2);
+    const midWireframe1 = new THREE.LineSegments(
+      new THREE.WireframeGeometry(midGeo1),
+      new THREE.LineBasicMaterial({ color: colorTertiary, transparent: true, opacity: 0.2, blending: THREE.AdditiveBlending })
+    );
+    brainGroup.add(midWireframe1);
+
+    const midGeo2 = new THREE.OctahedronGeometry(90, 3);
+    const midWireframe2 = new THREE.LineSegments(
+      new THREE.WireframeGeometry(midGeo2),
+      new THREE.LineBasicMaterial({ color: colorPrimary, transparent: true, opacity: 0.15, blending: THREE.AdditiveBlending })
+    );
+    brainGroup.add(midWireframe2);
+
+    // 3. Nuvem de Sinapses (Mais densa)
+    const synapseCount = 6000;
+    const synapseGeo = new THREE.BufferGeometry();
+    const synapsePos = new Float32Array(synapseCount * 3);
+
+    for (let i = 0; i < synapseCount * 3; i += 3) {
+      // Distribuição esférica
+      const radius = 100 + Math.random() * 120;
+      const theta = Math.random() * 2 * Math.PI;
+      const phi = Math.acos((Math.random() * 2) - 1);
+
+      synapsePos[i] = radius * Math.sin(phi) * Math.cos(theta);
+      synapsePos[i + 1] = radius * Math.sin(phi) * Math.sin(theta);
+      synapsePos[i + 2] = radius * Math.cos(phi);
+    }
+
+    synapseGeo.setAttribute('position', new THREE.BufferAttribute(synapsePos, 3));
+    const synapses = new THREE.Points(synapseGeo, materialParticle);
+    brainGroup.add(synapses);
+
+    // 3.5 Camada Externa de Dados e Orbes de Energia (Nova Complexidade)
+    const outerGeo = new THREE.IcosahedronGeometry(140, 4);
+    const outerShell = new THREE.Points(outerGeo, new THREE.PointsMaterial({
+      color: colorPrimary,
+      size: 0.8,
+      transparent: true,
+      opacity: 0.4,
+      blending: THREE.AdditiveBlending
+    }));
+    brainGroup.add(outerShell);
+
+    const pulseGroup = new THREE.Group();
+    const pulseCount = 8;
+    const pulses = [];
+    const pulseGeo = new THREE.SphereGeometry(1.2, 16, 16);
+    const pulseMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending });
+
+    for (let i = 0; i < pulseCount; i++) {
+      const pulse = new THREE.Mesh(pulseGeo, pulseMat);
+      pulse.userData = {
+        radius: 40 + Math.random() * 80,
+        speed: 0.02 + Math.random() * 0.04,
+        angle: Math.random() * Math.PI * 2
+      };
+      pulseGroup.add(pulse);
+      pulses.push(pulse);
+    }
+    brainGroup.add(pulseGroup);
+
+    // 4. Anéis Estruturais Complexos
+    const createRing = (radius, tube, rotX, rotY, rotZ, color) => {
+      const geo = new THREE.TorusGeometry(radius, tube, 3, 120);
+      const ring = new THREE.LineSegments(
+        new THREE.WireframeGeometry(geo),
+        new THREE.LineBasicMaterial({ color: color, transparent: true, opacity: 0.25, blending: THREE.AdditiveBlending })
+      );
+      ring.rotation.set(rotX, rotY, rotZ);
+      return ring;
+    };
+
+    const rings = new THREE.Group();
+    rings.add(createRing(180, 1.5, Math.PI / 2, 0, 0, colorPrimary));
+    rings.add(createRing(170, 4, 0, Math.PI / 4, 0, colorTertiary));
+    rings.add(createRing(170, 4, 0, -Math.PI / 4, 0, colorTertiary));
+    rings.add(createRing(200, 0.5, Math.PI / 2, Math.PI / 2, 0, colorPrimary)); // Anel vertical extra
+    brainGroup.add(rings);
+
+    // 5. Linhas de Conexão (Simulando rede neural ligando as bordas ao núcleo)
+    const linesGeo = new THREE.BufferGeometry();
+    const linePoints = [];
+    for (let i = 0; i < 100; i++) {
+      // Ponto no núcleo
+      linePoints.push(new THREE.Vector3(
+        (Math.random() - 0.5) * 40,
+        (Math.random() - 0.5) * 40,
+        (Math.random() - 0.5) * 40
+      ));
+      // Ponto na borda
+      const edgeRad = 150 + Math.random() * 20;
+      const theta = Math.random() * 2 * Math.PI;
+      const phi = Math.acos((Math.random() * 2) - 1);
+      linePoints.push(new THREE.Vector3(
+        edgeRad * Math.sin(phi) * Math.cos(theta),
+        edgeRad * Math.sin(phi) * Math.sin(theta),
+        edgeRad * Math.cos(phi)
+      ));
+    }
+    linesGeo.setFromPoints(linePoints);
+    const connectionLines = new THREE.Line(linesGeo, new THREE.LineBasicMaterial({
+      color: colorPrimary,
+      transparent: true,
+      opacity: 0.2,
+      blending: THREE.AdditiveBlending
+    }));
+    brainGroup.add(connectionLines);
+
+    // Redimensionamento da Janela
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // Loop de Animação
+    const clock = new THREE.Clock();
+
+    function animate() {
+      requestAnimationFrame(animate);
+      const time = clock.getElapsedTime();
+
+      // Rotações mais complexas e aceleradas (Alta energia do Magnetar)
+      coreParticles.rotation.y -= 0.03;
+      innerCoreMesh.rotation.x += 0.04;
+      innerCoreMesh.rotation.y += 0.025;
+
+      midWireframe1.rotation.y += 0.008;
+      midWireframe1.rotation.z -= 0.004;
+
+      midWireframe2.rotation.y -= 0.005;
+      midWireframe2.rotation.x += 0.002;
+
+      rings.rotation.y += 0.003;
+      rings.rotation.z += 0.002;
+
+      synapses.rotation.y += 0.003;
+
+      // Animação das novas camadas
+      outerShell.rotation.y += 0.001;
+      outerShell.rotation.x -= 0.0015;
+
+      pulses.forEach(pulse => {
+        pulse.userData.angle += pulse.userData.speed;
+        const r = pulse.userData.radius;
+        const a = pulse.userData.angle;
+        // Órbita tridimensional irregular
+        pulse.position.set(Math.cos(a) * r, Math.sin(a * 2) * (r * 0.3), Math.sin(a) * r);
+      });
+      pulseGroup.rotation.z -= 0.01;
+      pulseGroup.rotation.x += 0.005;
+
+      // Pulsação extrema no núcleo e na rede
+      const scale = 1 + Math.sin(time * 8) * 0.12;
+      coreParticles.scale.set(scale, scale, scale);
+      innerCoreMesh.scale.set(scale, scale, scale);
+
+      controls.update();
+      renderer.render(scene, camera);
+    }
+
+    animate();
+  </script>
+</body>
+
+</html>

@@ -1,4 +1,4 @@
-import { app, ipcMain } from 'electron'
+import { app } from 'electron'
 import path from 'path'
 import fs from 'fs'
 
@@ -21,7 +21,8 @@ export class ChatService {
     try {
       if (fs.existsSync(this.filePath)) {
         const data = fs.readFileSync(this.filePath, 'utf-8')
-        return JSON.parse(data)
+        const parsed = JSON.parse(data)
+        return Array.isArray(parsed) ? parsed : []
       }
       return []
     } catch (error) {

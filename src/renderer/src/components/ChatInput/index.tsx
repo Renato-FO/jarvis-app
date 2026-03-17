@@ -35,17 +35,14 @@ export function ChatInput({ onSend, disabled }: Props) {
       mimeType: 'audio/webm'
     })
 
-    recorder.ondataavailable = (e) => {
-      if (e.data.size > 0) chunksRef.current.push(e.data)
+    recorder.ondataavailable = (event) => {
+      if (event.data.size > 0) chunksRef.current.push(event.data)
     }
 
     recorder.onstop = async () => {
       const blob = new Blob(chunksRef.current, { type: 'audio/webm' })
-
       const buffer = await blob.arrayBuffer()
-
       const text = await window.jarvis.transcribe(buffer)
-
       onSend(text)
     }
 
@@ -55,57 +52,50 @@ export function ChatInput({ onSend, disabled }: Props) {
   }
 
   const stopRecording = () => {
-    handleSend()
     mediaRecorderRef.current?.stop()
     setIsRecording(false)
   }
 
-  const handleKeyDown = (e: KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
+  const handleKeyDown = (event: KeyboardEvent) => {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault()
       handleSend()
     }
   }
 
   return (
-    <div className="flex gap-3 items-end relative">
-      <textarea
-        value={input}
-        onChange={(e) => setInput(e.target.value)}
-        onKeyDown={handleKeyDown}
-        disabled={disabled}
-        rows={1}
-        className={`
-          flex-1 bg-black/30 border text-gray-200
-          rounded p-3 font-mono text-sm outline-none resize-none
-          transition-all duration-300
-          min-h-11 max-h-32
-        `}
-      />
+    <div className="chat-input-shell flex items-end gap-3">
+      <div className="chat-input-shell__field relative flex-1">
+        <textarea
+          value={input}
+          onChange={(event) => setInput(event.target.value)}
+          onKeyDown={handleKeyDown}
+          disabled={disabled}
+          rows={1}
+          placeholder="Pergunte algo ou peça ao Jarvis para cruzar conhecimentos..."
+          className="min-h-14 max-h-36 w-full resize-none rounded-2xl border border-white/10 bg-white/6 px-4 py-4 pr-14 text-sm text-slate-100 outline-none transition-all duration-300 placeholder:text-slate-500 focus:border-cyan-300/50 focus:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
+        />
+        <button
+          onClick={() => (isRecording ? stopRecording() : startRecording())}
+          type="button"
+          className={`absolute bottom-3 right-3 flex h-8 w-8 items-center justify-center rounded-full border transition-all ${
+            isRecording
+              ? 'border-rose-400/70 bg-rose-500/20 text-rose-100'
+              : 'border-cyan-300/30 bg-cyan-300/8 text-cyan-100'
+          }`}
+          title={isRecording ? 'Parar gravação' : 'Ativar voz'}
+        >
+          <MicIcon className="h-4 w-4" />
+        </button>
+      </div>
 
-      {/* Botão de Microfone */}
-      <button
-        onClick={() => (isRecording ? stopRecording() : startRecording())}
-        className={`
-          h-11 w-11 flex items-center justify-center rounded transition-all
-          ${isRecording ? 'bg-red-600' : 'bg-black/30'}
-        `}
-        title={isRecording ? 'Parar gravação' : 'Ativar voz'}
-      >
-        <MicIcon />
-      </button>
-
-      {/* Botão de Enviar */}
       <button
         onClick={handleSend}
         disabled={disabled || !input.trim()}
-        className="
-          h-11 px-6 bg-jarvis-accent text-white font-bold text-xs tracking-wider rounded
-          hover:bg-blue-600 transition-colors uppercase
-          disabled:bg-jarvis-border disabled:text-gray-500 disabled:cursor-not-allowed
-        "
+        type="button"
+        className="chat-input-shell__send h-14 rounded-2xl border border-cyan-300/40 bg-cyan-300/14 px-5 text-xs font-semibold uppercase tracking-[0.24em] text-cyan-100 transition-all hover:border-cyan-200/60 hover:bg-cyan-300/20 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-500"
       >
-        Execute
+        Enviar
       </button>
     </div>
   )

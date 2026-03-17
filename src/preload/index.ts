@@ -1,22 +1,32 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 
-const jarvisAPI = {
-  sendMessage: (message: string, messages: string[]): void => {
-    console.log(message, messages, 'Primeira parte')
-    ipcRenderer.send('ask-jarvis', message, messages)
-  },
-  onResponse: (callback: (chunk: string) => void): void => {
-    // Limpa ouvintes antigos para evitar duplicação em re-renders do React
-    ipcRenderer.removeAllListeners('jarvis-chunk')
-    ipcRenderer.on('jarvis-chunk', (_event, chunk) => callback(chunk))
-  },
-  transcribe: (buffer: ArrayBuffer) => ipcRenderer.invoke('transcribe', buffer)
+function subscribe<T>(channel: string, callback: (payload: T) => void) {
+  const listener = (_event: Electron.IpcRendererEvent, payload: T) => callback(payload)
+  ipcRenderer.on(channel, listener)
+
+  return () => {
+    ipcRenderer.removeListener(channel, listener)
+  }
 }
 
-// Use `contextBridge` APIs to expose Electron APIs to
-// renderer only if context isolation is enabled, otherwise
-// just add to the DOM global.
+const jarvisAPI = {
+  sendMessage: (message: string, messages: unknown[]): void => {
+    ipcRenderer.send('ask-jarvis', message, messages)
+  },
+  onResponse: (callback: (chunk: string) => void) => subscribe('jarvis-chunk', callback),
+  onDone: (callback: (success: boolean) => void) => subscribe('jarvis-done', callback),
+  transcribe: (buffer: ArrayBuffer) => ipcRenderer.invoke('transcribe', buffer),
+  getKnowledgeState: () => ipcRenderer.invoke('knowledge:get-state'),
+  getRuntimeStatus: () => ipcRenderer.invoke('runtime:get-status'),
+  selectDocuments: () => ipcRenderer.invoke('knowledge:select-documents'),
+  ingestDocuments: (filePaths: string[]) => ipcRenderer.invoke('knowledge:ingest-documents', filePaths),
+  onKnowledgeProgress: (callback: (payload: unknown) => void) =>
+    subscribe('knowledge-progress', callback),
+  onKnowledgeState: (callback: (payload: unknown) => void) => subscribe('knowledge-state', callback),
+  onRuntimeStatus: (callback: (payload: unknown) => void) => subscribe('runtime-status', callback)
+}
+
 if (process.contextIsolated) {
   try {
     contextBridge.exposeInMainWorld('electron', electronAPI)
@@ -28,5 +38,5 @@ if (process.contextIsolated) {
   // @ts-ignore (define in dts)
   window.electron = electronAPI
   // @ts-ignore (define in dts)
-  window.api = api
+  window.jarvis = jarvisAPI
 }

@@ -1,6 +1,6 @@
 import ReactMarkdown from 'react-markdown'
 import rehypeHighlight from 'rehype-highlight'
-import 'highlight.js/styles/atom-one-dark.css' // Tema Dark do VS Code
+import 'highlight.js/styles/atom-one-dark.css'
 
 interface Props {
   content: string
@@ -8,62 +8,47 @@ interface Props {
 
 export function MarkdownRenderer({ content }: Props) {
   return (
-    <div className="prose prose-invert max-w-none text-sm text-gray-300 leading-relaxed">
+    <div className="markdown-body max-w-none text-sm text-slate-100">
       <ReactMarkdown
         rehypePlugins={[rehypeHighlight]}
         components={{
-          code({ node, inline, className, children, ...props }: any) {
+          code({ className, children, ...props }: any) {
             const match = /language-(\w+)/.exec(className || '')
-            return !inline && match ? (
-              <div className="rounded-lg overflow-hidden my-4 border border-gray-700 bg-[#1e1e1e] shadow-md">
-                {/* Header do Código */}
-                <div className="bg-[#2d2d2d] px-4 py-1.5 text-xs text-gray-400 border-b border-gray-700 font-mono flex justify-between items-center select-none">
-                  <span className="uppercase font-bold tracking-wider">{match[1]}</span>
-                  <div className="flex gap-1.5">
-                    <div className="w-2.5 h-2.5 rounded-full bg-red-500/20"></div>
-                    <div className="w-2.5 h-2.5 rounded-full bg-yellow-500/20"></div>
-                    <div className="w-2.5 h-2.5 rounded-full bg-green-500/20"></div>
-                  </div>
+
+            return match ? (
+              <div className="my-4 overflow-hidden rounded-2xl border border-white/8 bg-slate-950/80 shadow-[0_14px_40px_rgba(2,6,23,0.24)]">
+                <div className="flex items-center justify-between border-b border-white/6 bg-white/4 px-4 py-2 text-[11px] uppercase tracking-[0.28em] text-slate-400">
+                  <span>{match[1]}</span>
+                  <span>core block</span>
                 </div>
-                {/* Área do Código */}
-                <div className="p-4 overflow-x-auto">
-                  <code className={`${className} font-mono text-sm`} {...props}>
+                <div className="overflow-x-auto p-4">
+                  <code className={className} {...props}>
                     {children}
                   </code>
                 </div>
               </div>
             ) : (
               <code
-                className="bg-gray-800 px-1.5 py-0.5 rounded text-jarvis-accent font-mono text-xs border border-gray-700"
+                className="rounded-md border border-cyan-300/16 bg-cyan-300/8 px-1.5 py-0.5 text-xs text-cyan-100"
                 {...props}
               >
                 {children}
               </code>
             )
           },
-          // Links
-          a: ({ node, ...props }) => (
+          a: (props) => (
             <a
-              className="text-blue-400 hover:text-blue-300 hover:underline transition-colors"
+              className="text-cyan-200 transition-colors hover:text-cyan-100 hover:underline"
               target="_blank"
               rel="noopener noreferrer"
               {...props}
             />
           ),
-          // Listas
-          ul: ({ node, ...props }) => (
-            <ul className="list-disc pl-5 space-y-1 my-2 marker:text-gray-500" {...props} />
-          ),
-          ol: ({ node, ...props }) => (
-            <ol className="list-decimal pl-5 space-y-1 my-2 marker:text-gray-500" {...props} />
-          ),
-          // Títulos
-          h3: ({ node, ...props }) => (
-            <h3
-              className="text-md font-bold text-white mt-4 mb-2 border-b border-gray-700 pb-1"
-              {...props}
-            />
-          )
+          ul: (props) => <ul className="my-3 list-disc space-y-1 pl-5 marker:text-cyan-300/60" {...props} />,
+          ol: (props) => <ol className="my-3 list-decimal space-y-1 pl-5 marker:text-cyan-300/60" {...props} />,
+          h1: (props) => <h1 className="mb-3 mt-5 text-lg font-semibold text-white" {...props} />,
+          h2: (props) => <h2 className="mb-2 mt-4 text-base font-semibold text-white" {...props} />,
+          h3: (props) => <h3 className="mb-2 mt-4 text-sm font-semibold uppercase tracking-[0.16em] text-cyan-100" {...props} />
         }}
       >
         {content}

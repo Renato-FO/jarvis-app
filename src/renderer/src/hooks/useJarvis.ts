@@ -1,60 +1,96 @@
-import { useState, useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Message } from '../types/chat'
 
 export function useJarvis() {
   const [messages, setMessages] = useState<Message[]>([])
   const [isProcessing, setIsProcessing] = useState(false)
-
-  // Ref para controlar o buffer de stream sem causar re-renders desnecessários
-  const streamBuffer = useRef('')
+  const messagesRef = useRef<Message[]>([])
 
   useEffect(() => {
-    // Escuta a resposta do Backend (Main Process)
-    window.jarvis.onResponse((chunk: string) => {
+    const unsubscribeChunk = window.jarvis.onResponse((chunk: string) => {
       setMessages((prev) => {
-        const lastMsg = prev[prev.length - 1]
+        const safePrev = Array.isArray(prev) ? prev : []
+        const safeChunk = typeof chunk === 'string' ? chunk : String(chunk ?? '')
+        const lastMsg = safePrev[safePrev.length - 1]
 
-        // Se a última msg não for do Jarvis, cria uma nova
         if (!lastMsg || lastMsg.sender !== 'jarvis') {
-          return [
-            ...prev,
+          const nextMessages = [
+            ...safePrev,
             {
-              id: Date.now().toString(),
-              sender: 'jarvis',
-              text: chunk,
+              id: `jarvis-${Date.now()}`,
+              sender: 'jarvis' as const,
+              text: safeChunk,
               timestamp: new Date(),
               isStreaming: true
             }
           ]
+
+          messagesRef.current = nextMessages
+          return nextMessages
         }
 
-        // Se já existe, atualiza o texto (Imutabilidade do React)
-        const updatedLastMsg = { ...lastMsg, text: lastMsg.text + chunk }
-        return [...prev.slice(0, -1), updatedLastMsg]
-      })
+        const nextMessages = [
+          ...safePrev.slice(0, -1),
+          {
+            ...lastMsg,
+            text: `${String(lastMsg.text ?? '')}${safeChunk}`,
+            isStreaming: true
+          }
+        ]
 
-      setIsProcessing(false) // Começou a receber, não está mais "esperando"
+        messagesRef.current = nextMessages
+        return nextMessages
+      })
     })
+
+    const unsubscribeDone = window.jarvis.onDone(() => {
+      setMessages((prev) => {
+        const safePrev = Array.isArray(prev) ? prev : []
+        const lastMsg = safePrev[safePrev.length - 1]
+        if (!lastMsg || lastMsg.sender !== 'jarvis') return safePrev
+
+        const nextMessages = [
+          ...safePrev.slice(0, -1),
+          {
+            ...lastMsg,
+            isStreaming: false
+          }
+        ]
+
+        messagesRef.current = nextMessages
+        return nextMessages
+      })
+      setIsProcessing(false)
+    })
+
+    return () => {
+      unsubscribeChunk()
+      unsubscribeDone()
+    }
   }, [])
 
   const sendMessage = (text: string) => {
-    if (!text.trim()) return
+    const trimmed = text.trim()
+    if (!trimmed || isProcessing) return
 
-    console.log(messages, 'UseJarvis')
-
-    // 1. Adiciona mensagem do usuário na UI
     const userMsg: Message = {
-      id: Date.now().toString(),
+      id: `user-${Date.now()}`,
       sender: 'user',
-      text: text,
+      text: trimmed,
       timestamp: new Date()
     }
 
-    setMessages((prev) => [...prev, userMsg])
-    setIsProcessing(true)
+    const history = messagesRef.current
 
-    // 2. Dispara para o Backend
-    window.jarvis.sendMessage(text, messages)
+    setMessages((prev) => {
+      const safePrev = Array.isArray(prev) ? prev : []
+      const nextMessages = [...safePrev, userMsg]
+      messagesRef.current = nextMessages
+      return nextMessages
+    })
+
+    setIsProcessing(true)
+    window.jarvis.sendMessage(trimmed, history)
   }
 
   return { messages, sendMessage, isProcessing }

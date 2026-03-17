@@ -1,27 +1,76 @@
-import { app, shell, BrowserWindow, ipcMain, IpcMainEvent, session } from 'electron'
+import {
+  app,
+  shell,
+  BrowserWindow,
+  ipcMain,
+  IpcMainEvent,
+  session,
+  dialog
+} from 'electron'
+import type { OpenDialogOptions } from 'electron'
 import { join } from 'path'
 import path from 'path'
-import fs from 'fs'
 import { writeFile, unlink } from 'fs/promises'
 import { spawn } from 'child_process'
 import os from 'os'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
-import { Ollama } from 'ollama'
 import { SYSTEM_PROMPT } from '../files/system_prompt'
 import { knowledgeBase } from './services/KnowledgeBase'
+import { ollamaService } from './services/OllamaService'
 
-var ollama = new Ollama({ host: 'http://127.0.0.1:11434' })
 const ffmpegPath = require('ffmpeg-static').replace('app.asar', 'app.asar.unpacked')
-var OLLAMA_MODEL = 'qwen3-coder:30b'
+const CHAT_HISTORY_BUDGET = 12000
+
+function getErrorDetails(error: unknown) {
+  if (error instanceof Error) {
+    return {
+      message: error.message,
+      stack: error.stack || error.message
+    }
+  }
+
+  return {
+    message: String(error),
+    stack: String(error)
+  }
+}
+
+function trimMessageHistory(
+  messages: Array<{ role: 'user' | 'assistant'; content: string }>,
+  maxChars: number
+) {
+  const selected: Array<{ role: 'user' | 'assistant'; content: string }> = []
+  let usedChars = 0
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    const content = typeof message?.content === 'string' ? message.content : ''
+    const size = content.length
+
+    if (selected.length > 0 && usedChars + size > maxChars) {
+      break
+    }
+
+    selected.unshift({
+      role: message?.role === 'assistant' ? 'assistant' : 'user',
+      content
+    })
+    usedChars += size
+  }
+
+  return selected
+}
 
 function createWindow(): void {
-  // Create the browser window.
   const mainWindow = new BrowserWindow({
-    width: 900,
-    height: 670,
+    width: 1560,
+    height: 940,
+    minWidth: 860,
+    minHeight: 640,
     show: false,
     autoHideMenuBar: true,
+    backgroundColor: '#05111f',
     ...(process.platform === 'linux' ? { icon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -38,8 +87,6 @@ function createWindow(): void {
     return { action: 'deny' }
   })
 
-  // HMR for renderer base on electron-vite cli.
-  // Load the remote URL for development or the local html file for production.
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
@@ -73,223 +120,317 @@ ${c.reset}`
   console.log('\n' + line)
   console.log(logo)
   console.log(line)
-
   console.log(` ${c.yellow}> SYSTEM:${c.reset}    ${c.green}* ONLINE${c.reset}`)
-  console.log(` ${c.yellow}> MEMORY:${c.reset}    ${c.blue}* KNOWLEDGE BASE LOADED${c.reset}`)
-  console.log(` ${c.yellow}> MODE:${c.reset}      ${c.red}* ADMINISTRATOR ACCESS${c.reset}`)
+  console.log(` ${c.yellow}> MEMORY:${c.reset}    ${c.blue}* STANDBY${c.reset}`)
+  console.log(` ${c.yellow}> MODE:${c.reset}      ${c.red}* INTERACTIVE WORKSPACE${c.reset}`)
   console.log(` ${c.yellow}> TIME:${c.reset}      ${new Date().toLocaleTimeString()}`)
-
   console.log(line + '\n')
 }
 
-// This method will be called when Electron has finished
-// initialization and is ready to create browser windows.
-// Some APIs can only be used after this event occurs.
-app.whenReady().then(async () => {
-  // Set app user model id for windows
-  electronApp.setAppUserModelId('com.electron')
-
-  await knowledgeBase.initialize()
-
-  const docsPath = path.join(__dirname, '../../documents')
-
-  if (fs.existsSync(docsPath)) {
-    console.log(`[System] Verificando documentos em: ${docsPath}`)
-    const files = fs.readdirSync(docsPath).filter((f) => f.endsWith('.pdf'))
-
-    for (const file of files) {
-      const fullPath = path.join(docsPath, file)
-      console.log(`[Ingestion] Processando: ${file}...`)
-      // A função ingestPDF já salva no disco, então é seguro
-      await knowledgeBase.ingestPDF(fullPath)
-    }
-  } else {
-    console.warn(
-      `[System] Pasta 'documents' não encontrada. Crie-a na raiz para adicionar conhecimento.`
-    )
-  }
-
-  app.on('browser-window-created', (_, window) => {
-    optimizer.watchWindowShortcuts(window)
-  })
-
-  // JARVIS Communication
-  ipcMain.on('ask-jarvis', async (event: IpcMainEvent, userMessage: string, messages) => {
-    try {
-      const relevantContext = await knowledgeBase.searchRelevantContext(userMessage)
-
-      // if (relevantContext) {
-      //   console.log('Contexto Encontrado:', relevantContext)
-      // }
-
-      const systemMessage = `${SYSTEM_PROMPT}
-      CONTEXTO RECUPERADO (USE ISSO COMO VERDADE ABSOLUTA):
-      ${relevantContext || 'Nenhum contexto adicional encontrado.'}
-      `
-
-      const today = new Date().toLocaleDateString('pt-BR', {
-        weekday: 'long',
-        year: 'numeric',
-        month: 'long',
-        day: 'numeric'
-      })
-
-      messages = messages.map((msg) => {
-        return {
-          role: msg.sender === 'user' ? 'user' : 'assistant',
-          content: msg.text
-        }
-      })
-
-      const finalMessages = [
-        {
-          role: 'system',
-          content: `${systemMessage}\n\nDATA DO SISTEMA: ${today}. Considere esta data para responder sobre versões e obsolescência.`
-        },
-        ...messages,
-        { role: 'user', content: userMessage }
-      ]
-
-      const response = await ollama.chat({
-        model: OLLAMA_MODEL,
-        messages: finalMessages,
-        stream: true
-      })
-
-      for await (const part of response) {
-        event.sender.send('jarvis-chunk', part.message.content)
-      }
-
-      event.sender.send('jarvis-done', true)
-    } catch (error: any) {
-      console.error('Model Error:', error)
-      event.sender.send('jarvis-chunk', `[SYSTEM ERROR]: ${error.message || 'Unknown error'}`)
-      event.sender.send('jarvis-done', false)
-    }
-  })
-
-  // ---------------------------------------------------------
-  // MÓDULO DE TRANSCRIÇÃO (AUDIO PIPELINE)
-  // ---------------------------------------------------------
-  ipcMain.handle('transcribe', async (_event, buffer: ArrayBuffer) => {
-    const timestamp = Date.now()
-    const tempDir = os.tmpdir()
-
-    const inputWebm = path.join(tempDir, `jarvis-audio-${timestamp}.webm`)
-    const outputWav = path.join(tempDir, `jarvis-audio-${timestamp}.wav`)
-
-    try {
-      console.log(`[Audio] Recebido buffer de ${buffer.byteLength} bytes`)
-
-      await writeFile(inputWebm, Buffer.from(buffer))
-
-      console.log('[Audio] Convertendo WebM -> WAV (16kHz)...')
-
-      await new Promise<void>((resolve, reject) => {
-        const ffmpeg = spawn(ffmpegPath, [
-          '-i',
-          inputWebm,
-          '-ar',
-          '16000',
-          '-ac',
-          '1',
-          '-c:a',
-          'pcm_s16le',
-          outputWav
-        ])
-
-        ffmpeg.on('close', (code) => {
-          if (code === 0) resolve()
-          else reject(new Error(`FFmpeg falhou com código ${code}`))
-        })
-      })
-
-      const whisperPath = path.join(process.cwd(), 'model/Release', 'whisper-cli.exe')
-      const modelPath = path.join(process.cwd(), 'model/Release', 'ggml-base.bin')
-
-      console.log('[Audio] Rodando Whisper...')
-
-      const transcription = await new Promise<string>((resolve, reject) => {
-        let output = ''
-
-        const proc = spawn(whisperPath, [
-          '-m',
-          modelPath,
-          '-f',
-          outputWav,
-          '--language',
-          'pt',
-          '--beam-size',
-          '1',
-          '--no-timestamps'
-        ])
-
-        proc.stdout.on('data', (data) => {
-          const text = data.toString()
-          output += text
-        })
-
-        proc.on('close', (code) => {
-          if (code !== 0) {
-            console.error(`Whisper exit code: ${code}`)
-            if (!output) reject(new Error(`Whisper falhou: ${code}`))
-          }
-          resolve(output.trim())
-        })
-      })
-
-      return transcription
-    } catch (error: any) {
-      console.error('[Transcribe Error]', error)
-      return `[Erro de Áudio]: ${error.message}`
-    } finally {
-      try {
-        await unlink(inputWebm).catch(() => {})
-        await unlink(outputWav).catch(() => {})
-        console.log('[Audio] Arquivos temporários limpos.')
-      } catch (e) {
-        console.error('[Audio] Falha ao limpar temporários', e)
-      }
-    }
-  })
-
-  printStartupBanner()
-
-  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
-    if (permission === 'media') {
-      return callback(true)
-    }
-
-    // Opcional: Autorizar notificações também
-    if (permission === 'notifications') {
-      return callback(true)
-    }
-
-    callback(false)
-  })
-
-  if (process.platform === 'darwin') {
-    const { systemPreferences } = require('electron')
-    await systemPreferences.askForMediaAccess('microphone')
-  }
-
-  createWindow()
-
-  app.on('activate', function () {
-    // On macOS it's common to re-create a window in the app when the
-    // dock icon is clicked and there are no other windows open.
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
-  })
+process.on('uncaughtException', (error) => {
+  const details = getErrorDetails(error)
+  console.error('[Main][uncaughtException]', details.stack)
 })
 
-// Quit when all windows are closed, except on macOS. There, it's common
-// for applications and their menu bar to stay active until the user quits
-// explicitly with Cmd + Q.
+process.on('unhandledRejection', (reason) => {
+  const details = getErrorDetails(reason)
+  console.error('[Main][unhandledRejection]', details.stack)
+})
+
+app
+  .whenReady()
+  .then(async () => {
+    electronApp.setAppUserModelId('com.electron')
+
+    const broadcastRuntimeStatus = () => {
+      const status = ollamaService.getStatus()
+
+      for (const window of BrowserWindow.getAllWindows()) {
+        window.webContents.send('runtime-status', status)
+      }
+    }
+
+    const unsubscribeRuntime = ollamaService.subscribe(() => {
+      broadcastRuntimeStatus()
+    })
+
+    await knowledgeBase.initialize()
+    try {
+      await ollamaService.ensureStartupValidation()
+      console.log('[Ollama] Ambiente validado com sucesso.')
+    } catch (error) {
+      console.error('[Ollama] Falha na validação inicial.', error)
+    }
+
+    app.on('browser-window-created', (_, window) => {
+      optimizer.watchWindowShortcuts(window)
+    })
+
+    ipcMain.on('ask-jarvis', async (event: IpcMainEvent, userMessage: string, messages) => {
+      let stage = 'ensure-chat-ready'
+      try {
+        await ollamaService.ensureChatReady()
+
+        stage = 'search-relevant-context'
+        const relevantContext = await knowledgeBase.searchRelevantContext(userMessage)
+        const sourceLedger =
+          relevantContext.sources.length > 0
+            ? relevantContext.sources
+                .map((source) => `${source.id}: ${source.source}`)
+                .join('\n')
+            : 'Nenhuma fonte recuperada.'
+
+        console.log(
+          [
+            '[RAG][RetrievedContext]',
+            `query=${JSON.stringify(String(userMessage ?? ''))}`,
+            `mode=${relevantContext.retrievalMode}`,
+            `sourceCount=${relevantContext.sources.length}`,
+            'sources:',
+            sourceLedger,
+            'context:',
+            relevantContext.contextText || 'Nenhum contexto adicional encontrado.'
+          ].join('\n')
+        )
+
+        const systemMessage = `${SYSTEM_PROMPT}
+CONTEXTO RECUPERADO (USE ISSO COMO VERDADE ABSOLUTA QUANDO HOUVER RESPOSTA DIRETA):
+${relevantContext.contextText || 'Nenhum contexto adicional encontrado.'}
+
+MODO DE RECUPERACAO:
+${relevantContext.retrievalMode}
+
+REGRAS ADICIONAIS DE RESPOSTA:
+- Se existir resposta direta no contexto, responda com base nele e nao complemente com conhecimento geral.
+- Para perguntas de lista, devolva os itens do contexto sem inventar categorias novas.
+- Ao final, inclua "Fontes:" com os IDs realmente usados.
+
+MAPA DE FONTES DISPONIVEIS:
+${sourceLedger}
+`
+
+        const today = new Date().toLocaleDateString('pt-BR', {
+          weekday: 'long',
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric'
+        })
+
+        const history: Array<{ role: 'user' | 'assistant'; content: string }> = Array.isArray(
+          messages
+        )
+          ? messages
+              .filter((msg) => msg && typeof msg === 'object')
+              .map((msg) => ({
+                role: msg.sender === 'user' ? 'user' : 'assistant',
+                content: String(msg.text ?? '')
+              }))
+          : []
+
+        const boundedHistory = trimMessageHistory(history, CHAT_HISTORY_BUDGET)
+
+        stage = 'chat-request'
+        const finalMessages = [
+          {
+            role: 'system',
+            content: `${systemMessage}\n\nDATA DO SISTEMA: ${today}. Considere esta data para responder sobre versões e obsolescência.`
+          },
+          ...boundedHistory,
+          { role: 'user', content: userMessage }
+        ]
+
+        const response = await ollamaService.getClient().chat({
+          model: ollamaService.getChatModel(),
+          messages: finalMessages,
+          stream: true,
+          keep_alive: '20m'
+        })
+
+        stage = 'chat-stream'
+        for await (const part of response) {
+          event.sender.send('jarvis-chunk', part.message.content)
+        }
+
+        event.sender.send('jarvis-done', true)
+      } catch (error: any) {
+        const details = getErrorDetails(error)
+        const explicitMessage = [
+          `[ask-jarvis] ${details.message}`,
+          `stage=${stage}`,
+          `userMessageLength=${String(userMessage ?? '').length}`,
+          `historyLength=${Array.isArray(messages) ? messages.length : 0}`,
+          `stack=${details.stack}`
+        ].join('\n')
+
+        console.error('Model Error:', explicitMessage)
+        event.sender.send(
+          'jarvis-chunk',
+          `[SYSTEM ERROR]\n${explicitMessage}`
+        )
+        event.sender.send('jarvis-done', false)
+      }
+    })
+
+    ipcMain.handle('knowledge:get-state', async () => {
+      return knowledgeBase.getSnapshot()
+    })
+
+    ipcMain.handle('runtime:get-status', async () => {
+      return ollamaService.getStatus()
+    })
+
+    ipcMain.handle('knowledge:select-documents', async (event) => {
+      const window = BrowserWindow.fromWebContents(event.sender)
+      const supportedExtensions = knowledgeBase.getSupportedExtensions()
+      const dialogOptions: OpenDialogOptions = {
+        title: 'Adicionar documentos à memória do Jarvis',
+        properties: ['openFile', 'multiSelections'],
+        filters: [
+          {
+            name: 'Documentos suportados',
+            extensions: supportedExtensions.map((extension) => extension.replace('.', ''))
+          }
+        ]
+      }
+
+      const result = window
+        ? await dialog.showOpenDialog(window, dialogOptions)
+        : await dialog.showOpenDialog(dialogOptions)
+
+      return {
+        canceled: result.canceled,
+        filePaths: result.filePaths
+      }
+    })
+
+    ipcMain.handle('knowledge:ingest-documents', async (event, filePaths: string[]) => {
+      if (!Array.isArray(filePaths) || filePaths.length === 0) {
+        return knowledgeBase.getSnapshot()
+      }
+
+      void knowledgeBase
+        .ingestDocuments(filePaths, (progress) => {
+          event.sender.send('knowledge-progress', progress)
+          event.sender.send('knowledge-state', knowledgeBase.getSnapshot())
+        })
+        .catch((error: any) => {
+          event.sender.send('knowledge-progress', {
+            type: 'document-error',
+            error: error.message || 'Falha ao processar documentos.'
+          })
+          event.sender.send('knowledge-state', knowledgeBase.getSnapshot())
+        })
+
+      return knowledgeBase.getSnapshot()
+    })
+
+    ipcMain.handle('transcribe', async (_event, buffer: ArrayBuffer) => {
+      const timestamp = Date.now()
+      const tempDir = os.tmpdir()
+      const inputWebm = path.join(tempDir, `jarvis-audio-${timestamp}.webm`)
+      const outputWav = path.join(tempDir, `jarvis-audio-${timestamp}.wav`)
+
+      try {
+        console.log(`[Audio] Recebido buffer de ${buffer.byteLength} bytes`)
+        await writeFile(inputWebm, Buffer.from(buffer))
+
+        await new Promise<void>((resolve, reject) => {
+          const ffmpeg = spawn(ffmpegPath, [
+            '-i',
+            inputWebm,
+            '-ar',
+            '16000',
+            '-ac',
+            '1',
+            '-c:a',
+            'pcm_s16le',
+            outputWav
+          ])
+
+          ffmpeg.on('close', (code) => {
+            if (code === 0) resolve()
+            else reject(new Error(`FFmpeg falhou com código ${code}`))
+          })
+        })
+
+        const whisperPath = path.join(process.cwd(), 'model/Release', 'whisper-cli.exe')
+        const modelPath = path.join(process.cwd(), 'model/Release', 'ggml-base.bin')
+
+        const transcription = await new Promise<string>((resolve, reject) => {
+          let output = ''
+
+          const proc = spawn(whisperPath, [
+            '-m',
+            modelPath,
+            '-f',
+            outputWav,
+            '--language',
+            'pt',
+            '--beam-size',
+            '1',
+            '--no-timestamps'
+          ])
+
+          proc.stdout.on('data', (data) => {
+            output += data.toString()
+          })
+
+          proc.on('close', (code) => {
+            if (code !== 0 && !output) {
+              reject(new Error(`Whisper falhou: ${code}`))
+              return
+            }
+
+            resolve(output.trim())
+          })
+        })
+
+        return transcription
+      } catch (error: any) {
+        console.error('[Transcribe Error]', error)
+        return `[Erro de Áudio]: ${error.message}`
+      } finally {
+        try {
+          await unlink(inputWebm).catch(() => {})
+          await unlink(outputWav).catch(() => {})
+        } catch (cleanupError) {
+          console.error('[Audio] Falha ao limpar temporários', cleanupError)
+        }
+      }
+    })
+
+    printStartupBanner()
+
+    session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+      if (permission === 'media' || permission === 'notifications') {
+        callback(true)
+        return
+      }
+
+      callback(false)
+    })
+
+    if (process.platform === 'darwin') {
+      const { systemPreferences } = require('electron')
+      await systemPreferences.askForMediaAccess('microphone')
+    }
+
+    createWindow()
+
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    })
+
+    app.on('before-quit', () => {
+      unsubscribeRuntime()
+    })
+  })
+  .catch((error) => {
+    console.error('[System] Falha durante inicializacao do app.', error)
+  })
+
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit()
   }
 })
-
-// In this file you can include the rest of your app's specific main process
-// code. You can also put them in separate files and require them here.

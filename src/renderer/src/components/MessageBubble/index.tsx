@@ -1,5 +1,5 @@
 import { Message } from '../../types/chat'
-import { MarkdownRenderer } from '../MarkdownRenderer' // <--- Importe o componente
+import { MarkdownRenderer } from '../MarkdownRenderer'
 
 interface Props {
   message: Message
@@ -7,34 +7,25 @@ interface Props {
 
 export function MessageBubble({ message }: Props) {
   const isJarvis = message.sender === 'jarvis'
-
-  // Truque Visual: Se estiver fazendo streaming, adicionamos um cursor falso ao final do texto
-  // Isso faz com que o cursor apareça "dentro" do Markdown (ex: dentro do bloco de código)
-  const displayContent = message.isStreaming ? message.text + ' ▍' : message.text
+  const displayContent = message.isStreaming ? `${message.text} ▍` : message.text
 
   return (
     <div className={`flex w-full ${isJarvis ? 'justify-start' : 'justify-end'}`}>
       <div
-        className={`
-          max-w-[85%] rounded-lg p-4 font-mono text-sm leading-relaxed shadow-lg relative
-          ${
-            isJarvis
-              ? 'bg-jarvis-panel border border-jarvis-border text-gray-200 rounded-bl-none'
-              : 'bg-jarvis-accent text-white rounded-br-none'
-          }
-        `}
+        className={`max-w-[88%] rounded-[24px] border px-4 py-3 shadow-[0_18px_48px_rgba(2,6,23,0.28)] backdrop-blur-xl ${
+          isJarvis
+            ? 'border-cyan-300/14 bg-slate-950/55 text-slate-100'
+            : 'border-cyan-300/28 bg-cyan-300/14 text-cyan-50'
+        }`}
       >
-        {/* Label do Remetente */}
         <span
-          className={`block text-[10px] font-bold uppercase tracking-wider mb-2 ${isJarvis ? 'text-gray-500' : 'text-blue-200'}`}
+          className={`mb-2 block text-[10px] font-semibold uppercase tracking-[0.34em] ${
+            isJarvis ? 'text-cyan-200/70' : 'text-cyan-50/80'
+          }`}
         >
-          {isJarvis ? 'J.A.R.V.I.S.' : 'COMMANDER'}
+          {isJarvis ? 'Core Response' : 'Commander'}
         </span>
-
-        {/* Renderização Rica (Markdown + Cores) */}
-        <div>
-          <MarkdownRenderer content={displayContent} />
-        </div>
+        <MarkdownRenderer content={displayContent} />
       </div>
     </div>
   )
