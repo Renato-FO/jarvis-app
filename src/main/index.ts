@@ -225,8 +225,11 @@ MODO DE RECUPERACAO:
 ${relevantContext.retrievalMode}
 
 REGRAS ADICIONAIS DE RESPOSTA:
+- Priorize fatos concretos do contexto antes de qualquer explicacao geral.
 - Se existir resposta direta no contexto, responda com base nele e nao complemente com conhecimento geral.
+- Evite resposta generica quando houver contexto util; cite os IDs CTX no corpo da resposta para cada fato relevante.
 - Para perguntas de lista, devolva os itens do contexto sem inventar categorias novas.
+- Se houver conflito entre contexto e conhecimento geral, prevalece o contexto recuperado.
 - Ao final, inclua "Fontes:" com os IDs realmente usados.
 
 MAPA DE FONTES DISPONIVEIS:

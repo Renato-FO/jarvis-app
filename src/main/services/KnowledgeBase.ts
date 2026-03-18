@@ -18,6 +18,12 @@ const EMBEDDING_CHUNK_OVERLAP = 140
 const EMBEDDING_MAX_CHARS = 1400
 const EMBEDDING_MIN_CHARS = 120
 const SEARCH_RESULT_LIMIT = 6
+const FACT_SEARCH_RESULT_LIMIT = 4
+const HYBRID_SEMANTIC_LIMIT = 16
+const HYBRID_SEMANTIC_LIMIT_FACT = 28
+const HYBRID_KEYWORD_LIMIT = 22
+const HYBRID_KEYWORD_LIMIT_FACT = 36
+const MIN_CONTENT_LENGTH_FOR_RETRIEVAL = 50
 const MAX_CONTEXT_CHARS = 5200
 const MAX_CONTEXT_HIT_CHARS = 1200
 const PREPARED_PREVIEW_MAX_CHARS = 2600
@@ -131,6 +137,36 @@ interface PersistedVectorRecord {
   metadata: Record<string, unknown>
   embedding: number[]
   id?: string
+}
+
+interface QueryKeywordScore {
+  overlapCount: number
+  score: number
+  matchedKeywords: string[]
+}
+
+interface RetrievalFilters {
+  documentIds: Set<string>
+  collectionDocumentIds: Set<string>
+  hasDocumentConstraint: boolean
+  hasCollectionConstraint: boolean
+}
+
+interface RetrievalCandidate {
+  key: string
+  documentId: string
+  source: string
+  content: string
+  metadata: Record<string, unknown>
+  similarity: number | null
+  semanticRank: number | null
+  keywordRank: number | null
+  keywordScore: QueryKeywordScore
+  lexicalScore: number
+  matchedKeywords: string[]
+  filterBoost: number
+  chunkBoost: number
+  baseScore: number
 }
 
 const SUPPORTED_EXTENSIONS = new Set([
@@ -537,22 +573,38 @@ export class KnowledgeBase {
 
     try {
       queryLength = String(query ?? '').length
-      const searchLimit = retrievalMode === 'fact' ? 20 : SEARCH_RESULT_LIMIT
       const maxContextChars = retrievalMode === 'fact' ? 2600 : MAX_CONTEXT_CHARS
       const maxContextHitChars = retrievalMode === 'fact' ? 820 : MAX_CONTEXT_HIT_CHARS
       const queryKeywords = this.extractQueryKeywords(query)
+      const retrievalFilters = this.resolveRetrievalFilters(query, queryKeywords)
+      const semanticLimit =
+        retrievalMode === 'fact' ? HYBRID_SEMANTIC_LIMIT_FACT : HYBRID_SEMANTIC_LIMIT
+      const keywordLimit = retrievalMode === 'fact' ? HYBRID_KEYWORD_LIMIT_FACT : HYBRID_KEYWORD_LIMIT
 
       stage = 'embed-query'
       await ollamaService.ensureEmbeddingReady()
       const queryEmbedding = await this.getEmbeddings().embedQuery(String(query ?? ''))
 
-      stage = 'vector-search'
-      const searchResult = await this.vectorStore.similaritySearchVectorWithScore(
+      stage = 'semantic-search'
+      const semanticResult = await this.vectorStore.similaritySearchVectorWithScore(
         queryEmbedding,
-        searchLimit
+        semanticLimit
       )
 
-      if (!Array.isArray(searchResult) || searchResult.length === 0) {
+      stage = 'keyword-search'
+      const keywordResult = this.keywordSearchCandidates(queryKeywords, retrievalFilters, keywordLimit)
+      stage = 'hybrid-merge'
+      const mergedCandidates = this.mergeHybridCandidates(
+        semanticResult,
+        keywordResult,
+        queryKeywords,
+        retrievalFilters
+      )
+      const filterAwareCandidates = this.applyRetrievalFilters(mergedCandidates, retrievalFilters)
+      const candidatesToRank =
+        filterAwareCandidates.length > 0 ? filterAwareCandidates : mergedCandidates
+
+      if (candidatesToRank.length === 0) {
         return {
           contextText: '',
           sources: [],
@@ -560,69 +612,41 @@ export class KnowledgeBase {
         }
       }
 
-      hitCount = searchResult.length
-      stage = 'build-context'
+      hitCount = candidatesToRank.length
+      stage = 'rerank'
+      const rerankedHits = this.rerankCandidates(
+        candidatesToRank,
+        queryKeywords,
+        retrievalMode,
+        retrievalFilters
+      )
 
-      const rankedHits = searchResult
-        .map(([document, similarity]) => {
-          const source =
-            typeof document.metadata?.source === 'string'
-              ? document.metadata.source
-              : 'Fonte desconhecida'
-          const content = typeof document.pageContent === 'string' ? document.pageContent : ''
-          const keywordScore = this.scoreHitAgainstQuery(queryKeywords, source, content)
-
-          return {
-            document,
-            source,
-            content,
-            similarity,
-            keywordScore
-          }
-        })
-        .filter((entry) => entry.content.length > 50)
-        .sort((left, right) => {
-          const leftComposite = left.keywordScore.score + left.similarity * 10
-          const rightComposite = right.keywordScore.score + right.similarity * 10
-          return rightComposite - leftComposite
-        })
-
-      const filteredHits =
+      const selectedHits =
         retrievalMode === 'fact'
-          ? (() => {
-              const strictHits = rankedHits
-                .filter(
-                  (entry) =>
-                    entry.keywordScore.overlapCount >= 3 || entry.keywordScore.score >= 24
-                )
-                .slice(0, 3)
+          ? this.selectFactCandidates(rerankedHits)
+          : rerankedHits.slice(0, SEARCH_RESULT_LIMIT)
 
-              if (strictHits.length > 0) {
-                return strictHits
-              }
+      if (selectedHits.length === 0) {
+        return {
+          contextText: '',
+          sources: [],
+          retrievalMode
+        }
+      }
 
-              const broaderHits = rankedHits
-                .filter(
-                  (entry) =>
-                    entry.keywordScore.overlapCount >= 1 ||
-                    entry.keywordScore.score >= 8 ||
-                    entry.similarity >= 0.18
-                )
-                .slice(0, 4)
-
-              return broaderHits.length > 0 ? broaderHits : rankedHits.slice(0, 3)
-            })()
-          : rankedHits.slice(0, SEARCH_RESULT_LIMIT)
+      stage = 'build-context'
 
       const contextBlocks: string[] = []
       const sources: RetrievedContextSource[] = []
       let usedChars = 0
 
-      for (const [index, entry] of filteredHits.entries()) {
+      for (const [index, entry] of selectedHits.entries()) {
         const trimmedContent = this.trimToBudget(entry.content, maxContextHitChars)
         const contextId = `CTX-${index + 1}`
+        const similarityLabel =
+          entry.similarity === null ? 'n/a' : Number(entry.similarity).toFixed(4)
         const block = [
-          `[${contextId} | Fonte: ${entry.source} | similarity=${entry.similarity.toFixed(4)} | keywordScore=${entry.keywordScore.score} | overlap=${entry.keywordScore.overlapCount}]`,
+          `[${contextId} | Fonte: ${entry.source} | hybridScore=${entry.baseScore.toFixed(2)} | similarity=${similarityLabel} | lexical=${entry.lexicalScore.toFixed(1)} | overlap=${entry.keywordScore.overlapCount}]`,
           trimmedContent
         ].join('\n')
 
@@ -1214,6 +1238,30 @@ export class KnowledgeBase {
       .toLowerCase()
   }
 
+  private tokenizeSearchText(text: string): string[] {
+    return this.normalizeSearchText(text)
+      .match(/[a-z0-9]+/g)
+      ?.filter(Boolean) ?? []
+  }
+
+  private escapeRegExp(value: string): string {
+    return String(value ?? '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  }
+
+  private textContainsTerm(normalizedHaystack: string, normalizedNeedle: string): boolean {
+    const haystack = String(normalizedHaystack ?? '')
+    const needle = String(normalizedNeedle ?? '').trim()
+    if (!haystack || !needle) {
+      return false
+    }
+
+    if (needle.includes(' ')) {
+      return haystack.includes(needle)
+    }
+
+    return new RegExp(`\\b${this.escapeRegExp(needle)}\\b`, 'i').test(haystack)
+  }
+
   private extractQueryKeywords(query: string): string[] {
     const stopwords = new Set([
       'a',
@@ -1252,8 +1300,7 @@ export class KnowledgeBase {
       'uma'
     ])
 
-    const normalized = this.normalizeSearchText(query)
-    const tokens = normalized.match(/[a-z0-9]+/g) ?? []
+    const tokens = this.tokenizeSearchText(query)
     const baseKeywords = tokens.filter(
       (token) => (token.length >= 3 || /^\d+$/.test(token)) && !stopwords.has(token)
     )
@@ -1292,11 +1339,539 @@ export class KnowledgeBase {
     return Array.from(expanded)
   }
 
-  private scoreHitAgainstQuery(queryKeywords: string[], source: string, content: string) {
+  private getDocumentAliases(record: KnowledgeDocumentRecord): string[] {
+    const aliases = new Set<string>()
+    const normalizedName = this.normalizeSearchText(String(record.name ?? '').trim())
+    const normalizedBaseName = this.normalizeSearchText(
+      path.basename(String(record.name ?? ''), path.extname(String(record.name ?? '')))
+    )
+
+    if (normalizedName.length >= 4) {
+      aliases.add(normalizedName)
+    }
+
+    if (normalizedBaseName.length >= 4) {
+      aliases.add(normalizedBaseName)
+    }
+
+    for (const token of this.tokenizeSearchText(normalizedBaseName)) {
+      if (token.length >= 5) {
+        aliases.add(token)
+      }
+    }
+
+    return Array.from(aliases)
+  }
+
+  private getDocumentCollectionTags(record: KnowledgeDocumentRecord): string[] {
+    const tags = new Set<string>()
+    const normalizedType = this.normalizeSearchText(String(record.type ?? ''))
+    const safePath = String(record.path ?? '')
+    const parentPath = safePath ? path.dirname(safePath) : ''
+    const parentSegments = parentPath
+      .split(/[\\/]/)
+      .map((segment) => this.normalizeSearchText(segment))
+      .filter((segment) => segment.length >= 3)
+      .slice(-2)
+
+    if (normalizedType) {
+      tags.add(normalizedType)
+    }
+
+    for (const segment of parentSegments) {
+      tags.add(segment)
+    }
+
+    const typeAliases: Record<string, string[]> = {
+      md: ['markdown', 'documentacao', 'texto'],
+      pdf: ['pdf', 'documentacao', 'texto'],
+      txt: ['txt', 'texto', 'documentacao'],
+      csv: ['csv', 'dados'],
+      json: ['json', 'dados'],
+      xml: ['xml', 'dados'],
+      js: ['codigo', 'javascript'],
+      ts: ['codigo', 'typescript'],
+      jsx: ['codigo', 'javascript'],
+      tsx: ['codigo', 'typescript'],
+      html: ['codigo', 'frontend'],
+      css: ['codigo', 'frontend'],
+      yml: ['dados', 'configuracao'],
+      yaml: ['dados', 'configuracao']
+    }
+
+    for (const alias of typeAliases[normalizedType] ?? []) {
+      tags.add(alias)
+    }
+
+    return Array.from(tags)
+  }
+
+  private matchesDocumentTypeInQuery(
+    documentType: string,
+    normalizedQuery: string,
+    queryKeywordSet: Set<string>
+  ): boolean {
+    const type = this.normalizeSearchText(documentType)
+    if (!type) {
+      return false
+    }
+
+    const aliasesByType: Record<string, string[]> = {
+      md: ['md', 'markdown'],
+      pdf: ['pdf'],
+      txt: ['txt', 'texto'],
+      csv: ['csv'],
+      json: ['json'],
+      xml: ['xml'],
+      js: ['js', 'javascript', 'codigo'],
+      ts: ['ts', 'typescript', 'codigo'],
+      jsx: ['jsx', 'javascript', 'codigo'],
+      tsx: ['tsx', 'typescript', 'codigo'],
+      html: ['html', 'frontend'],
+      css: ['css', 'frontend'],
+      yml: ['yml', 'yaml'],
+      yaml: ['yaml', 'yml']
+    }
+
+    return (aliasesByType[type] ?? [type]).some(
+      (alias) => queryKeywordSet.has(alias) || this.textContainsTerm(normalizedQuery, alias)
+    )
+  }
+
+  private resolveRetrievalFilters(query: string, queryKeywords: string[]): RetrievalFilters {
+    const normalizedQuery = this.normalizeSearchText(query)
+    const queryTokens = new Set(this.tokenizeSearchText(query))
+    const queryKeywordSet = new Set(queryKeywords)
+    const readyDocuments = this.processedFiles.filter((record) => record.status === 'ready')
+    const documentIds = new Set<string>()
+    const collectionDocumentIds = new Set<string>()
+    const hasDocumentCue = /\b(documento|arquivo|doc|manual|fonte)\b/i.test(normalizedQuery)
+    const hasCollectionCue = /\b(colecao|categoria|pasta|diretorio|tipo)\b/i.test(normalizedQuery)
+
+    for (const record of readyDocuments) {
+      const aliases = this.getDocumentAliases(record)
+      const aliasTokens = Array.from(
+        new Set(
+          aliases.flatMap((alias) => this.tokenizeSearchText(alias)).filter((token) => token.length >= 3)
+        )
+      )
+      const exactAliasMatch = aliases.some((alias) => this.textContainsTerm(normalizedQuery, alias))
+      const tokenOverlap = aliasTokens.filter((token) => queryTokens.has(token)).length
+      const tokenThreshold = Math.min(2, Math.max(1, Math.ceil(aliasTokens.length * 0.5)))
+      const tokenMatch = tokenOverlap > 0 && tokenOverlap >= tokenThreshold
+
+      if (exactAliasMatch || (hasDocumentCue && tokenMatch)) {
+        documentIds.add(record.id)
+      }
+
+      const collectionTags = this.getDocumentCollectionTags(record)
+      const collectionHit = collectionTags.some(
+        (tag) => queryKeywordSet.has(tag) || this.textContainsTerm(normalizedQuery, tag)
+      )
+      if (
+        (hasCollectionCue && collectionHit) ||
+        this.matchesDocumentTypeInQuery(record.type, normalizedQuery, queryKeywordSet)
+      ) {
+        collectionDocumentIds.add(record.id)
+      }
+    }
+
+    return {
+      documentIds,
+      collectionDocumentIds,
+      hasDocumentConstraint: hasDocumentCue || documentIds.size > 0,
+      hasCollectionConstraint: hasCollectionCue || collectionDocumentIds.size > 0
+    }
+  }
+
+  private buildCandidateKey(
+    documentId: string,
+    metadata: Record<string, unknown>,
+    source: string,
+    content: string
+  ): string {
+    const chunkIndex = Number(metadata.chunkIndex ?? -1)
+    const childChunkIndex = Number(metadata.childChunkIndex ?? -1)
+
+    if (documentId && chunkIndex >= 0) {
+      return `${documentId}::${chunkIndex}::${Math.max(0, childChunkIndex)}`
+    }
+
+    const normalizedSource = this.normalizeSearchText(source)
+    const normalizedSnippet = this.normalizeSearchText(content.slice(0, 96))
+    return `${documentId || normalizedSource}::${normalizedSnippet}`
+  }
+
+  private computeFilterBoost(documentId: string, filters: RetrievalFilters): number {
+    let boost = 0
+    if (filters.documentIds.size > 0 && filters.documentIds.has(documentId)) {
+      boost += 28
+    }
+    if (filters.collectionDocumentIds.size > 0 && filters.collectionDocumentIds.has(documentId)) {
+      boost += 16
+    }
+    return boost
+  }
+
+  private computeChunkBoost(metadata: Record<string, unknown>): number {
+    const chunkIndex = Number(metadata.chunkIndex ?? 0)
+    const childChunkIndex = Number(metadata.childChunkIndex ?? 0)
+    const chunkBoost = Number.isFinite(chunkIndex) ? Math.max(0, 5 - Math.min(5, chunkIndex)) : 0
+    const childBoost = Number.isFinite(childChunkIndex)
+      ? Math.max(0, 2 - Math.min(2, childChunkIndex))
+      : 0
+
+    return chunkBoost + childBoost
+  }
+
+  private reciprocalRankFusion(semanticRank: number | null, keywordRank: number | null): number {
+    const k = 10
+    let score = 0
+
+    if (semanticRank && semanticRank > 0) {
+      score += 1 / (k + semanticRank)
+    }
+
+    if (keywordRank && keywordRank > 0) {
+      score += 1 / (k + keywordRank)
+    }
+
+    return score * 140
+  }
+
+  private keywordSearchCandidates(
+    queryKeywords: string[],
+    retrievalFilters: RetrievalFilters,
+    limit: number
+  ): RetrievalCandidate[] {
+    if (!this.vectorStore || queryKeywords.length === 0) {
+      return []
+    }
+
+    const vectors = this.vectorStore.memoryVectors ?? []
+    const candidates: RetrievalCandidate[] = []
+
+    for (const vector of vectors) {
+      const metadata =
+        vector?.metadata && typeof vector.metadata === 'object'
+          ? (vector.metadata as Record<string, unknown>)
+          : {}
+      const source = typeof metadata.source === 'string' ? metadata.source : 'Fonte desconhecida'
+      const content = typeof vector?.content === 'string' ? vector.content : ''
+
+      if (content.length < MIN_CONTENT_LENGTH_FOR_RETRIEVAL) {
+        continue
+      }
+
+      const documentId = String(metadata.documentId ?? '')
+      const keywordScore = this.scoreHitAgainstQuery(queryKeywords, source, content)
+      if (keywordScore.overlapCount === 0 && keywordScore.score < 8) {
+        continue
+      }
+
+      const lexicalScore = keywordScore.score + keywordScore.overlapCount * 4
+      const filterBoost = this.computeFilterBoost(documentId, retrievalFilters)
+      const chunkBoost = this.computeChunkBoost(metadata)
+
+      candidates.push({
+        key: this.buildCandidateKey(documentId, metadata, source, content),
+        documentId,
+        source,
+        content,
+        metadata,
+        similarity: null,
+        semanticRank: null,
+        keywordRank: null,
+        keywordScore,
+        lexicalScore,
+        matchedKeywords: keywordScore.matchedKeywords,
+        filterBoost,
+        chunkBoost,
+        baseScore: lexicalScore + filterBoost + chunkBoost
+      })
+    }
+
+    return candidates
+      .sort((left, right) => {
+        if (right.baseScore !== left.baseScore) {
+          return right.baseScore - left.baseScore
+        }
+
+        if (right.keywordScore.overlapCount !== left.keywordScore.overlapCount) {
+          return right.keywordScore.overlapCount - left.keywordScore.overlapCount
+        }
+
+        return right.content.length - left.content.length
+      })
+      .slice(0, Math.max(1, limit))
+      .map((candidate, index) => ({
+        ...candidate,
+        keywordRank: index + 1
+      }))
+  }
+
+  private mergeHybridCandidates(
+    semanticResult: Array<[Document, number]>,
+    keywordCandidates: RetrievalCandidate[],
+    queryKeywords: string[],
+    retrievalFilters: RetrievalFilters
+  ): RetrievalCandidate[] {
+    const byKey = new Map<string, RetrievalCandidate>()
+
+    for (const [index, [document, similarityRaw]] of semanticResult.entries()) {
+      const metadata =
+        document?.metadata && typeof document.metadata === 'object'
+          ? (document.metadata as Record<string, unknown>)
+          : {}
+      const source = typeof metadata.source === 'string' ? metadata.source : 'Fonte desconhecida'
+      const content = typeof document.pageContent === 'string' ? document.pageContent : ''
+
+      if (content.length < MIN_CONTENT_LENGTH_FOR_RETRIEVAL) {
+        continue
+      }
+
+      const documentId = String(metadata.documentId ?? '')
+      const keywordScore = this.scoreHitAgainstQuery(queryKeywords, source, content)
+      const lexicalScore = keywordScore.score + keywordScore.overlapCount * 3
+      const similarity = Math.max(0, Number(similarityRaw ?? 0))
+      const filterBoost = this.computeFilterBoost(documentId, retrievalFilters)
+      const chunkBoost = this.computeChunkBoost(metadata)
+      const key = this.buildCandidateKey(documentId, metadata, source, content)
+
+      byKey.set(key, {
+        key,
+        documentId,
+        source,
+        content,
+        metadata,
+        similarity,
+        semanticRank: index + 1,
+        keywordRank: null,
+        keywordScore,
+        lexicalScore,
+        matchedKeywords: keywordScore.matchedKeywords,
+        filterBoost,
+        chunkBoost,
+        baseScore: similarity * 18 + lexicalScore + filterBoost + chunkBoost
+      })
+    }
+
+    for (const [index, candidate] of keywordCandidates.entries()) {
+      const keywordRank = index + 1
+      const existing = byKey.get(candidate.key)
+
+      if (!existing) {
+        byKey.set(candidate.key, {
+          ...candidate,
+          keywordRank
+        })
+        continue
+      }
+
+      const mergedKeywords = Array.from(
+        new Set([...existing.matchedKeywords, ...candidate.matchedKeywords])
+      )
+      existing.keywordRank = keywordRank
+      existing.lexicalScore = Math.max(existing.lexicalScore, candidate.lexicalScore)
+      existing.keywordScore = {
+        overlapCount: Math.max(existing.keywordScore.overlapCount, candidate.keywordScore.overlapCount),
+        score: Math.max(existing.keywordScore.score, candidate.keywordScore.score),
+        matchedKeywords: mergedKeywords
+      }
+      existing.matchedKeywords = mergedKeywords
+      existing.filterBoost = Math.max(existing.filterBoost, candidate.filterBoost)
+      existing.chunkBoost = Math.max(existing.chunkBoost, candidate.chunkBoost)
+    }
+
+    return Array.from(byKey.values())
+      .map((candidate) => {
+        const semanticScore = (candidate.similarity ?? 0) * 18
+        const rrfScore = this.reciprocalRankFusion(candidate.semanticRank, candidate.keywordRank)
+
+        return {
+          ...candidate,
+          baseScore:
+            semanticScore +
+            candidate.lexicalScore +
+            candidate.filterBoost +
+            candidate.chunkBoost +
+            rrfScore
+        }
+      })
+      .sort((left, right) => {
+        if (right.baseScore !== left.baseScore) {
+          return right.baseScore - left.baseScore
+        }
+
+        return right.keywordScore.overlapCount - left.keywordScore.overlapCount
+      })
+  }
+
+  private applyRetrievalFilters(
+    candidates: RetrievalCandidate[],
+    retrievalFilters: RetrievalFilters
+  ): RetrievalCandidate[] {
+    if (candidates.length === 0) {
+      return []
+    }
+
+    const hasDocumentFilters =
+      retrievalFilters.hasDocumentConstraint && retrievalFilters.documentIds.size > 0
+    const hasCollectionFilters =
+      retrievalFilters.hasCollectionConstraint && retrievalFilters.collectionDocumentIds.size > 0
+
+    if (!hasDocumentFilters && !hasCollectionFilters) {
+      return candidates
+    }
+
+    if (hasDocumentFilters && hasCollectionFilters) {
+      const intersection = candidates.filter(
+        (candidate) =>
+          retrievalFilters.documentIds.has(candidate.documentId) &&
+          retrievalFilters.collectionDocumentIds.has(candidate.documentId)
+      )
+      if (intersection.length > 0) {
+        return intersection
+      }
+
+      const union = candidates.filter(
+        (candidate) =>
+          retrievalFilters.documentIds.has(candidate.documentId) ||
+          retrievalFilters.collectionDocumentIds.has(candidate.documentId)
+      )
+      return union.length > 0 ? union : candidates
+    }
+
+    if (hasDocumentFilters) {
+      const documentMatches = candidates.filter((candidate) =>
+        retrievalFilters.documentIds.has(candidate.documentId)
+      )
+      return documentMatches.length > 0 ? documentMatches : candidates
+    }
+
+    const collectionMatches = candidates.filter((candidate) =>
+      retrievalFilters.collectionDocumentIds.has(candidate.documentId)
+    )
+    return collectionMatches.length > 0 ? collectionMatches : candidates
+  }
+
+  private rerankCandidates(
+    candidates: RetrievalCandidate[],
+    queryKeywords: string[],
+    retrievalMode: 'fact' | 'exploratory',
+    retrievalFilters: RetrievalFilters
+  ): RetrievalCandidate[] {
+    const selectionLimit =
+      retrievalMode === 'fact' ? FACT_SEARCH_RESULT_LIMIT + 4 : SEARCH_RESULT_LIMIT + 6
+    const remaining = [...candidates].sort((left, right) => right.baseScore - left.baseScore)
+    const selected: RetrievalCandidate[] = []
+    const coveredKeywords = new Set<string>()
+    const selectedByDocument = new Map<string, number>()
+
+    while (selected.length < selectionLimit && remaining.length > 0) {
+      let bestIndex = 0
+      let bestScore = Number.NEGATIVE_INFINITY
+
+      for (const [index, candidate] of remaining.entries()) {
+        const newCoverage = candidate.matchedKeywords.filter((kw) => !coveredKeywords.has(kw)).length
+        const coverageBoost = newCoverage * (retrievalMode === 'fact' ? 4.8 : 3.1)
+        const documentCount = candidate.documentId
+          ? Number(selectedByDocument.get(candidate.documentId) ?? 0)
+          : 0
+        const diversityPenalty =
+          documentCount > 0 ? documentCount * (retrievalMode === 'fact' ? 7 : 11) : 0
+        const weakSignalPenalty =
+          retrievalMode === 'fact' &&
+          candidate.keywordScore.overlapCount === 0 &&
+          (candidate.similarity ?? 0) < 0.16
+            ? 10
+            : 0
+        const documentFilterBoost =
+          retrievalFilters.documentIds.size > 0 &&
+          retrievalFilters.documentIds.has(candidate.documentId)
+            ? 8
+            : 0
+        const score =
+          candidate.baseScore +
+          coverageBoost +
+          documentFilterBoost -
+          diversityPenalty -
+          weakSignalPenalty
+
+        if (score > bestScore) {
+          bestScore = score
+          bestIndex = index
+        }
+      }
+
+      const [chosen] = remaining.splice(bestIndex, 1)
+      if (!chosen) {
+        break
+      }
+
+      selected.push({
+        ...chosen,
+        baseScore: bestScore
+      })
+
+      for (const keyword of chosen.matchedKeywords) {
+        coveredKeywords.add(keyword)
+      }
+
+      if (chosen.documentId) {
+        selectedByDocument.set(
+          chosen.documentId,
+          Number(selectedByDocument.get(chosen.documentId) ?? 0) + 1
+        )
+      }
+
+      if (
+        retrievalMode === 'fact' &&
+        coveredKeywords.size >= queryKeywords.length &&
+        selected.length >= FACT_SEARCH_RESULT_LIMIT
+      ) {
+        break
+      }
+    }
+
+    return selected
+  }
+
+  private selectFactCandidates(candidates: RetrievalCandidate[]): RetrievalCandidate[] {
+    if (candidates.length === 0) {
+      return []
+    }
+
+    const strict = candidates
+      .filter(
+        (candidate) =>
+          candidate.keywordScore.overlapCount >= 2 ||
+          candidate.lexicalScore >= 20 ||
+          (candidate.similarity ?? 0) >= 0.2
+      )
+      .slice(0, FACT_SEARCH_RESULT_LIMIT)
+    if (strict.length > 0) {
+      return strict
+    }
+
+    const broader = candidates
+      .filter(
+        (candidate) =>
+          candidate.keywordScore.overlapCount >= 1 ||
+          candidate.lexicalScore >= 10 ||
+          (candidate.similarity ?? 0) >= 0.13
+      )
+      .slice(0, FACT_SEARCH_RESULT_LIMIT)
+
+    return broader.length > 0 ? broader : candidates.slice(0, FACT_SEARCH_RESULT_LIMIT)
+  }
+
+  private scoreHitAgainstQuery(queryKeywords: string[], source: string, content: string): QueryKeywordScore {
     const normalizedSource = this.normalizeSearchText(source)
     const normalizedContent = this.normalizeSearchText(content.slice(0, 1600))
     let overlapCount = 0
     let score = 0
+    const matchedKeywords: string[] = []
 
     for (const keyword of queryKeywords) {
       const inSource = normalizedSource.includes(keyword)
@@ -1306,12 +1881,14 @@ export class KnowledgeBase {
         overlapCount += 1
         score += inSource ? 12 : 0
         score += inContent ? 5 : 0
+        matchedKeywords.push(keyword)
       }
     }
 
     return {
       overlapCount,
-      score
+      score,
+      matchedKeywords: Array.from(new Set(matchedKeywords))
     }
   }
 
