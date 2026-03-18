@@ -106,6 +106,13 @@ export interface RetrievedContextSource {
   id: string
   source: string
   excerpt: string
+  documentId?: string
+  filePath?: string
+  type?: string
+  score?: number
+  similarity?: number | null
+  lexical?: number
+  overlap?: number
 }
 
 export interface RetrievedContext {
@@ -640,11 +647,11 @@ export class KnowledgeBase {
       const sources: RetrievedContextSource[] = []
       let usedChars = 0
 
-      for (const [index, entry] of selectedHits.entries()) {
-        const trimmedContent = this.trimToBudget(entry.content, maxContextHitChars)
-        const contextId = `CTX-${index + 1}`
-        const similarityLabel =
-          entry.similarity === null ? 'n/a' : Number(entry.similarity).toFixed(4)
+        for (const [index, entry] of selectedHits.entries()) {
+          const trimmedContent = this.trimToBudget(entry.content, maxContextHitChars)
+          const contextId = `CTX-${index + 1}`
+          const similarityLabel =
+            entry.similarity === null ? 'n/a' : Number(entry.similarity).toFixed(4)
         const block = [
           `[${contextId} | Fonte: ${entry.source} | hybridScore=${entry.baseScore.toFixed(2)} | similarity=${similarityLabel} | lexical=${entry.lexicalScore.toFixed(1)} | overlap=${entry.keywordScore.overlapCount}]`,
           trimmedContent
@@ -663,14 +670,24 @@ export class KnowledgeBase {
           break
         }
 
-        contextBlocks.push(block)
-        sources.push({
-          id: contextId,
-          source: entry.source,
-          excerpt: trimmedContent
-        })
-        usedChars += block.length + 2
-      }
+          contextBlocks.push(block)
+          sources.push({
+            id: contextId,
+            source: entry.source,
+            excerpt: trimmedContent,
+            documentId: entry.documentId || undefined,
+            filePath:
+              entry.metadata && typeof entry.metadata.filePath === 'string'
+                ? entry.metadata.filePath
+                : undefined,
+            type: entry.metadata && typeof entry.metadata.type === 'string' ? entry.metadata.type : undefined,
+            score: Number(entry.baseScore.toFixed(2)),
+            similarity: entry.similarity === null ? null : Number(entry.similarity),
+            lexical: Number(entry.lexicalScore.toFixed(1)),
+            overlap: Number(entry.keywordScore.overlapCount)
+          })
+          usedChars += block.length + 2
+        }
 
       return {
         contextText: contextBlocks.join('\n\n'),

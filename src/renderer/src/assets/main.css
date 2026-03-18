@@ -286,6 +286,73 @@ input {
   gap: 10px;
 }
 
+.memory-filters {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.memory-filters__row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: flex-end;
+}
+
+.memory-filters__row--meta {
+  justify-content: space-between;
+  color: #9ab7c8;
+  font-size: 0.7rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.memory-filter {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 120px;
+  flex: 1;
+}
+
+.memory-filter span {
+  color: var(--color-jarvis-dim);
+  font-size: 0.66rem;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+}
+
+.memory-filter input,
+.memory-filter select {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(125, 211, 252, 0.16);
+  background: rgba(6, 18, 30, 0.78);
+  color: #d8efff;
+  font-size: 0.74rem;
+  letter-spacing: 0.08em;
+}
+
+.memory-filter input::placeholder {
+  color: rgba(125, 211, 252, 0.45);
+}
+
+.memory-filter input:focus,
+.memory-filter select:focus {
+  outline: none;
+  border-color: rgba(125, 211, 252, 0.42);
+  box-shadow: 0 0 0 1px rgba(125, 211, 252, 0.16);
+}
+
+.memory-filter--search {
+  flex: 2;
+  min-width: 180px;
+}
+
 .memory-summary {
   position: relative;
   z-index: 1;
@@ -426,6 +493,24 @@ input {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+
+.document-card__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 6px 0 2px;
+}
+
+.document-tag {
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(125, 211, 252, 0.16);
+  background: rgba(5, 16, 28, 0.72);
+  color: #b6d8ea;
+  font-size: 0.62rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
 }
 
 .document-card__header {
@@ -1367,6 +1452,11 @@ input {
   .chat-toolbar__actions,
   .document-preview__heading,
   .chunk-preview-item header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .memory-filters__row--meta {
     flex-direction: column;
     align-items: flex-start;
   }

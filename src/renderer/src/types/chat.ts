@@ -4,6 +4,13 @@ export interface MessageSource {
   id: string
   source: string
   excerpt?: string
+  documentId?: string
+  filePath?: string
+  type?: string
+  score?: number
+  similarity?: number | null
+  lexical?: number
+  overlap?: number
 }
 
 export interface JarvisResponseContext {
@@ -18,6 +25,7 @@ export interface Message {
   timestamp: Date
   isStreaming?: boolean // Para mostrar cursor piscando
   sources?: MessageSource[]
+  retrievalMode?: 'fact' | 'exploratory'
 }
 
 export interface ChatState {

@@ -1,11 +1,11 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { ChatInput } from './components/ChatInput'
 import { HolographicBrain, HolographicBrainPerformanceSample } from './components/HolographicBrain'
 import { MessageBubble } from './components/MessageBubble'
 import { useJarvis } from './hooks/useJarvis'
 import { useKnowledgeBase } from './hooks/useKnowledgeBase'
 import { useRuntimeStatus } from './hooks/useRuntimeStatus'
-import { KnowledgeDocumentStatus } from './types/knowledge'
+import { KnowledgeDocument, KnowledgeDocumentStatus } from './types/knowledge'
 import { RuntimePerformanceSnapshot } from './types/runtime'
 
 type OverlayPanel = 'memory' | 'dialogue' | 'status' | null
@@ -78,6 +78,34 @@ function getDocumentStatusLabel(status: KnowledgeDocumentStatus) {
   return 'erro'
 }
 
+function normalizeFilterValue(value: string) {
+  return String(value ?? '').trim().toLowerCase()
+}
+
+function resolveCollectionInfo(filePath: string) {
+  const parts = String(filePath ?? '').split(/[/\\]+/).filter(Boolean)
+  const parentSegments = parts.slice(0, -1)
+  const labels = parentSegments.slice(-2)
+  const keys = labels.map((segment) => normalizeFilterValue(segment)).filter(Boolean)
+
+  return {
+    labels: labels.filter((segment) => segment.trim().length > 0),
+    keys
+  }
+}
+
+function formatCollectionLabel(value: string) {
+  const trimmed = String(value ?? '').trim()
+  if (!trimmed) return ''
+  if (trimmed.length <= 3) return trimmed.toUpperCase()
+  return `${trimmed.charAt(0).toUpperCase()}${trimmed.slice(1)}`
+}
+
+type DocumentWithCollections = KnowledgeDocument & {
+  collectionLabels: string[]
+  collectionKeys: string[]
+}
+
 function App() {
   const { messages, sendMessage, isProcessing, streamDiagnostics } = useJarvis()
   const {
@@ -97,6 +125,11 @@ function App() {
   const [expandedDocumentId, setExpandedDocumentId] = useState<string | null>(null)
   const [corePerformance, setCorePerformance] = useState<HolographicBrainPerformanceSample | null>(null)
   const [isBooting, setIsBooting] = useState(true)
+  const [memorySearch, setMemorySearch] = useState('')
+  const [statusFilter, setStatusFilter] = useState<KnowledgeDocumentStatus | 'all'>('all')
+  const [typeFilter, setTypeFilter] = useState('all')
+  const [collectionFilter, setCollectionFilter] = useState('all')
+  const [sortMode, setSortMode] = useState<'recent' | 'name' | 'size' | 'chunks'>('recent')
   const [sessionStats, setSessionStats] = useState<SessionStats>({
     responseCount: 0,
     avgLatencyMs: null,
@@ -117,11 +150,117 @@ function App() {
   const endRef = useRef<HTMLDivElement>(null)
   const safeMessages = Array.isArray(messages) ? messages : []
   const safeDocuments = Array.isArray(state.documents) ? state.documents : []
+  const enrichedDocuments = useMemo<DocumentWithCollections[]>(
+    () =>
+      safeDocuments.map((document) => {
+        const { labels, keys } = resolveCollectionInfo(document.path)
+
+        return {
+          ...document,
+          collectionLabels: labels,
+          collectionKeys: keys
+        }
+      }),
+    [safeDocuments]
+  )
+  const collectionOptions = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const document of enrichedDocuments) {
+      for (const [index, key] of document.collectionKeys.entries()) {
+        if (!key || map.has(key)) continue
+        map.set(key, document.collectionLabels[index] ?? key)
+      }
+    }
+
+    return Array.from(map.entries())
+      .map(([key, label]) => ({
+        key,
+        label: formatCollectionLabel(label)
+      }))
+      .sort((left, right) => left.label.localeCompare(right.label))
+  }, [enrichedDocuments])
+  const typeOptions = useMemo(() => {
+    const set = new Set<string>()
+    for (const document of enrichedDocuments) {
+      if (document.type) {
+        set.add(document.type)
+      }
+    }
+    return Array.from(set).sort((left, right) => left.localeCompare(right))
+  }, [enrichedDocuments])
+  const normalizedSearch = normalizeFilterValue(memorySearch)
+  const filteredDocuments = useMemo(() => {
+    return enrichedDocuments.filter((document) => {
+      if (statusFilter !== 'all' && document.status !== statusFilter) {
+        return false
+      }
+
+      if (typeFilter !== 'all' && document.type !== typeFilter) {
+        return false
+      }
+
+      if (
+        collectionFilter !== 'all' &&
+        !document.collectionKeys.includes(normalizeFilterValue(collectionFilter))
+      ) {
+        return false
+      }
+
+      if (normalizedSearch) {
+        const searchTarget = [
+          document.name,
+          document.path,
+          document.type,
+          document.collectionLabels.join(' ')
+        ]
+          .join(' ')
+          .toLowerCase()
+
+        if (!searchTarget.includes(normalizedSearch)) {
+          return false
+        }
+      }
+
+      return true
+    })
+  }, [collectionFilter, enrichedDocuments, normalizedSearch, statusFilter, typeFilter])
+  const sortedDocuments = useMemo(() => {
+    const list = [...filteredDocuments]
+
+    list.sort((left, right) => {
+      if (sortMode === 'name') {
+        return left.name.localeCompare(right.name)
+      }
+
+      if (sortMode === 'size') {
+        return right.size - left.size
+      }
+
+      if (sortMode === 'chunks') {
+        return right.chunks - left.chunks
+      }
+
+      const leftDate = left.indexedAt ? new Date(left.indexedAt).getTime() : 0
+      const rightDate = right.indexedAt ? new Date(right.indexedAt).getTime() : 0
+      if (rightDate !== leftDate) {
+        return rightDate - leftDate
+      }
+
+      return left.name.localeCompare(right.name)
+    })
+
+    return list
+  }, [filteredDocuments, sortMode])
   const interactionCount = safeMessages.reduce(
     (count, message) => (message.sender === 'user' ? count + 1 : count),
     0
   )
   const isKnowledgeBusy = isImporting || state.stats.processingDocuments > 0
+  const hasActiveFilters =
+    normalizedSearch.length > 0 ||
+    statusFilter !== 'all' ||
+    typeFilter !== 'all' ||
+    collectionFilter !== 'all'
 
   useEffect(() => {
     window.jarvis.notifyRendererReady(Date.now())
@@ -378,6 +517,14 @@ function App() {
     setExpandedDocumentId(null)
   }
 
+  const handleResetFilters = () => {
+    setMemorySearch('')
+    setStatusFilter('all')
+    setTypeFilter('all')
+    setCollectionFilter('all')
+    setSortMode('recent')
+  }
+
   return (
     <div className="jarvis-shell">
       <div className="jarvis-shell__backdrop" />
@@ -504,25 +651,123 @@ function App() {
                     </div>
                   </div>
 
+                  <div className="memory-filters">
+                    <div className="memory-filters__row">
+                      <label className="memory-filter memory-filter--search">
+                        <span>Buscar</span>
+                        <input
+                          value={memorySearch}
+                          onChange={(event) => setMemorySearch(event.target.value)}
+                          placeholder="Nome, caminho, tag"
+                        />
+                      </label>
+                      <label className="memory-filter">
+                        <span>Status</span>
+                        <select
+                          value={statusFilter}
+                          onChange={(event) =>
+                            setStatusFilter(
+                              (event.target.value || 'all') as KnowledgeDocumentStatus | 'all'
+                            )
+                          }
+                        >
+                          <option value="all">Todos</option>
+                          <option value="ready">Prontos</option>
+                          <option value="processing">Processando</option>
+                          <option value="reindex-required">Reindexar</option>
+                          <option value="error">Falhas</option>
+                        </select>
+                      </label>
+                      <label className="memory-filter">
+                        <span>Tipo</span>
+                        <select
+                          value={typeFilter}
+                          onChange={(event) => setTypeFilter(event.target.value || 'all')}
+                        >
+                          <option value="all">Todos</option>
+                          {typeOptions.map((type) => (
+                            <option key={type} value={type}>
+                              {type.toUpperCase()}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="memory-filter">
+                        <span>Colecao</span>
+                        <select
+                          value={collectionFilter}
+                          onChange={(event) => setCollectionFilter(event.target.value || 'all')}
+                        >
+                          <option value="all">Todas</option>
+                          {collectionOptions.map((collection) => (
+                            <option key={collection.key} value={collection.key}>
+                              {collection.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="memory-filter">
+                        <span>Ordenar</span>
+                        <select
+                          value={sortMode}
+                          onChange={(event) =>
+                            setSortMode(
+                              (event.target.value as 'recent' | 'name' | 'size' | 'chunks') ||
+                                'recent'
+                            )
+                          }
+                        >
+                          <option value="recent">Recentes</option>
+                          <option value="name">Nome</option>
+                          <option value="size">Tamanho</option>
+                          <option value="chunks">Chunks</option>
+                        </select>
+                      </label>
+                    </div>
+                    <div className="memory-filters__row memory-filters__row--meta">
+                      <span>
+                        Exibindo {sortedDocuments.length} de {safeDocuments.length} documentos
+                      </span>
+                      {hasActiveFilters ? (
+                        <button
+                          type="button"
+                          className="action-button action-button--small action-button--ghost cursor-pointer"
+                          onClick={handleResetFilters}
+                        >
+                          Limpar filtros
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+
                   <div className="memory-activity">
                     <span className="memory-activity__label">Atividade recente</span>
                     <p>{activityLabel}</p>
                   </div>
 
                   <div className="document-list">
-                    {state.documents.length === 0 ? (
+                    {sortedDocuments.length === 0 ? (
                       <div className="empty-card">
-                        <p className="empty-card__title">Nenhum documento treinado</p>
+                        <p className="empty-card__title">
+                          {safeDocuments.length === 0
+                            ? 'Nenhum documento treinado'
+                            : 'Nenhum documento encontrado'}
+                        </p>
                         <p className="empty-card__text">
-                          Traga PDFs, Markdown, TXT, JSON ou codigo para comecar a montar a memoria
-                          do Jarvis.
+                          {safeDocuments.length === 0
+                            ? 'Traga PDFs, Markdown, TXT, JSON ou codigo para comecar a montar a memoria do Jarvis.'
+                            : 'Ajuste filtros ou remova restricoes para visualizar mais documentos.'}
                         </p>
                       </div>
                     ) : (
-                      state.documents.map((document) => {
+                      sortedDocuments.map((document) => {
                         const isExpanded = expandedDocumentId === document.id
                         const insights = insightsByDocument[document.id]
                         const isLoadingInsights = Boolean(insightLoadingByDocument[document.id])
+                        const displayTags = [
+                          document.type.toUpperCase(),
+                          ...document.collectionLabels.map((label) => formatCollectionLabel(label))
+                        ].filter((tag, index, tags) => tag && tags.indexOf(tag) === index)
 
                         return (
                           <article
@@ -538,6 +783,15 @@ function App() {
                                 {getDocumentStatusLabel(document.status)}
                               </span>
                             </div>
+                            {displayTags.length > 0 ? (
+                              <div className="document-card__tags">
+                                {displayTags.slice(0, 3).map((tag) => (
+                                  <span key={`${document.id}-${tag}`} className="document-tag">
+                                    {tag}
+                                  </span>
+                                ))}
+                              </div>
+                            ) : null}
                             <div className="document-card__meta">
                               <span>{formatBytes(document.size)}</span>
                               <span>{document.chunks} chunks</span>

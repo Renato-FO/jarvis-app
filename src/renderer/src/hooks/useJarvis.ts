@@ -54,7 +54,14 @@ function resolveResponseSources(text: string, context: JarvisResponseContext | n
     byId.set(normalizedId, {
       id: normalizedId,
       source: String(source.source ?? 'Fonte desconhecida'),
-      excerpt: typeof source.excerpt === 'string' ? source.excerpt : undefined
+      excerpt: typeof source.excerpt === 'string' ? source.excerpt : undefined,
+      documentId: source.documentId ? String(source.documentId) : undefined,
+      filePath: typeof source.filePath === 'string' ? source.filePath : undefined,
+      type: typeof source.type === 'string' ? source.type : undefined,
+      score: typeof source.score === 'number' ? source.score : undefined,
+      similarity: typeof source.similarity === 'number' || source.similarity === null ? source.similarity : undefined,
+      lexical: typeof source.lexical === 'number' ? source.lexical : undefined,
+      overlap: typeof source.overlap === 'number' ? source.overlap : undefined
     })
   }
 
@@ -218,7 +225,17 @@ export function useJarvis() {
               .map((source) => ({
                 id: String(source?.id ?? ''),
                 source: String(source?.source ?? ''),
-                excerpt: typeof source?.excerpt === 'string' ? source.excerpt : undefined
+                excerpt: typeof source?.excerpt === 'string' ? source.excerpt : undefined,
+                documentId: source?.documentId ? String(source.documentId) : undefined,
+                filePath: typeof source?.filePath === 'string' ? source.filePath : undefined,
+                type: typeof source?.type === 'string' ? source.type : undefined,
+                score: typeof source?.score === 'number' ? source.score : undefined,
+                similarity:
+                  typeof source?.similarity === 'number' || source?.similarity === null
+                    ? source.similarity
+                    : undefined,
+                lexical: typeof source?.lexical === 'number' ? source.lexical : undefined,
+                overlap: typeof source?.overlap === 'number' ? source.overlap : undefined
               }))
               .filter((source) => source.id && source.source)
           : []
@@ -270,7 +287,8 @@ export function useJarvis() {
           {
             ...lastMsg,
             isStreaming: false,
-            sources: resolvedSources.length > 0 ? resolvedSources : undefined
+            sources: resolvedSources.length > 0 ? resolvedSources : undefined,
+            retrievalMode: responseContextRef.current?.retrievalMode
           }
         ]
 
