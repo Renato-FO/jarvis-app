@@ -1,13 +1,23 @@
 import { useEffect, useRef, useState } from 'react'
 import { ChatInput } from './components/ChatInput'
-import { HolographicBrain } from './components/HolographicBrain'
+import { HolographicBrain, HolographicBrainPerformanceSample } from './components/HolographicBrain'
 import { MessageBubble } from './components/MessageBubble'
 import { useJarvis } from './hooks/useJarvis'
 import { useKnowledgeBase } from './hooks/useKnowledgeBase'
 import { useRuntimeStatus } from './hooks/useRuntimeStatus'
 import { KnowledgeDocumentStatus } from './types/knowledge'
+import { RuntimePerformanceSnapshot } from './types/runtime'
 
 type OverlayPanel = 'memory' | 'dialogue' | 'status' | null
+
+interface SessionStats {
+  responseCount: number
+  avgLatencyMs: number | null
+  avgDurationMs: number | null
+  p95LatencyMs: number | null
+  p95DurationMs: number | null
+  lastResponseAt: number | null
+}
 
 function formatBytes(bytes: number) {
   if (!bytes) return '0 KB'
@@ -21,6 +31,32 @@ function formatBytes(bytes: number) {
   }
 
   return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[unitIndex]}`
+}
+
+function formatDeltaBytes(delta: number | null) {
+  if (delta === null || Number.isNaN(delta)) return 'n/d'
+  const sign = delta >= 0 ? '+' : '-'
+  return `${sign}${formatBytes(Math.abs(delta))}`
+}
+
+function formatDuration(ms: number | null | undefined) {
+  if (ms === null || ms === undefined || Number.isNaN(ms)) return 'n/d'
+  if (ms < 1000) return `${Math.max(0, Math.round(ms))} ms`
+  const seconds = ms / 1000
+  return `${seconds.toFixed(seconds >= 10 ? 0 : 1)} s`
+}
+
+function average(values: number[]) {
+  if (values.length === 0) return null
+  const sum = values.reduce((total, value) => total + value, 0)
+  return Math.round(sum / values.length)
+}
+
+function percentile(values: number[], target: number) {
+  if (values.length === 0) return null
+  const sorted = [...values].sort((left, right) => left - right)
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil((target / 100) * sorted.length) - 1))
+  return Math.round(sorted[index])
 }
 
 function formatIndexedAt(value: string | null) {
@@ -43,7 +79,7 @@ function getDocumentStatusLabel(status: KnowledgeDocumentStatus) {
 }
 
 function App() {
-  const { messages, sendMessage, isProcessing } = useJarvis()
+  const { messages, sendMessage, isProcessing, streamDiagnostics } = useJarvis()
   const {
     state,
     activity,
@@ -59,6 +95,25 @@ function App() {
   const runtimeStatus = useRuntimeStatus()
   const [activePanel, setActivePanel] = useState<OverlayPanel>(null)
   const [expandedDocumentId, setExpandedDocumentId] = useState<string | null>(null)
+  const [corePerformance, setCorePerformance] = useState<HolographicBrainPerformanceSample | null>(null)
+  const [isBooting, setIsBooting] = useState(true)
+  const [sessionStats, setSessionStats] = useState<SessionStats>({
+    responseCount: 0,
+    avgLatencyMs: null,
+    avgDurationMs: null,
+    p95LatencyMs: null,
+    p95DurationMs: null,
+    lastResponseAt: null
+  })
+  const [perfSamples, setPerfSamples] = useState<RuntimePerformanceSnapshot[]>([])
+  const responseSamplesRef = useRef<
+    Array<{
+      latencyMs: number | null
+      durationMs: number | null
+      timestamp: number
+    }>
+  >([])
+  const wasProcessingRef = useRef(false)
   const endRef = useRef<HTMLDivElement>(null)
   const safeMessages = Array.isArray(messages) ? messages : []
   const safeDocuments = Array.isArray(state.documents) ? state.documents : []
@@ -67,6 +122,96 @@ function App() {
     0
   )
   const isKnowledgeBusy = isImporting || state.stats.processingDocuments > 0
+
+  useEffect(() => {
+    window.jarvis.notifyRendererReady(Date.now())
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    const resolveBoot = () => {
+      if (!cancelled) {
+        setIsBooting(false)
+      }
+    }
+    const idleWindow = window as Window & {
+      requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number
+      cancelIdleCallback?: (id: number) => void
+    }
+
+    if (idleWindow.requestIdleCallback) {
+      const idleId = idleWindow.requestIdleCallback(resolveBoot, { timeout: 1200 })
+      return () => {
+        cancelled = true
+        idleWindow.cancelIdleCallback?.(idleId)
+      }
+    }
+
+    const timeoutId = window.setTimeout(resolveBoot, 450)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timeoutId)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (isProcessing) {
+      wasProcessingRef.current = true
+      return
+    }
+
+    if (!wasProcessingRef.current) return
+    wasProcessingRef.current = false
+
+    const durationMs = streamDiagnostics.responseDurationMs
+    if (durationMs === null) return
+
+    const sample = {
+      latencyMs: streamDiagnostics.responseLatencyMs ?? null,
+      durationMs,
+      timestamp: Date.now()
+    }
+    const nextSamples = [...responseSamplesRef.current, sample].slice(-20)
+    responseSamplesRef.current = nextSamples
+
+    const latencies = nextSamples
+      .map((item) => item.latencyMs)
+      .filter((value): value is number => typeof value === 'number')
+    const durations = nextSamples
+      .map((item) => item.durationMs)
+      .filter((value): value is number => typeof value === 'number')
+
+    setSessionStats({
+      responseCount: nextSamples.length,
+      avgLatencyMs: average(latencies),
+      avgDurationMs: average(durations),
+      p95LatencyMs: percentile(latencies, 95),
+      p95DurationMs: percentile(durations, 95),
+      lastResponseAt: sample.timestamp
+    })
+  }, [isProcessing, streamDiagnostics.responseDurationMs, streamDiagnostics.responseLatencyMs])
+
+  useEffect(() => {
+    let cancelled = false
+
+    const poll = () => {
+      void window.jarvis
+        .getPerformanceSnapshot()
+        .then((snapshot) => {
+          if (cancelled) return
+          setPerfSamples((prev) => [...prev, snapshot].slice(-20))
+        })
+        .catch(() => {})
+    }
+
+    poll()
+    const interval = window.setInterval(poll, 30000)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(interval)
+    }
+  }, [])
 
   useEffect(() => {
     if (activePanel !== 'dialogue') return
@@ -101,6 +246,21 @@ function App() {
   }
 
   const highlightedDocument = safeDocuments[0]
+  const startupMetrics = runtimeStatus.startup
+  const startupHighlightMs =
+    startupMetrics?.rendererReadyMs ?? startupMetrics?.windowReadyMs ?? null
+  const perfWindowStart = perfSamples[0]
+  const perfWindowEnd = perfSamples[perfSamples.length - 1]
+  const perfWindowMinutes =
+    perfWindowStart && perfWindowEnd
+      ? Math.max(1, Math.round((perfWindowEnd.timestampMs - perfWindowStart.timestampMs) / 60000))
+      : null
+  const rssDelta =
+    perfWindowStart && perfWindowEnd ? perfWindowEnd.rssBytes - perfWindowStart.rssBytes : null
+  const heapDelta =
+    perfWindowStart && perfWindowEnd
+      ? perfWindowEnd.heapUsedBytes - perfWindowStart.heapUsedBytes
+      : null
 
   const activityLabel =
     activity?.type === 'chunk-progress'
@@ -130,11 +290,13 @@ function App() {
       : 'Treinando memoria'
     : isProcessing
       ? 'Processando consulta'
-      : runtimeStatus.phase === 'error'
-        ? runtimeLabel
-        : state.stats.indexedDocuments > 0
-          ? 'Memoria operacional'
-          : 'Aguardando documentos'
+      : isBooting
+        ? 'Inicializando interface'
+        : runtimeStatus.phase === 'error'
+          ? runtimeLabel
+          : state.stats.indexedDocuments > 0
+            ? 'Memoria operacional'
+            : 'Aguardando documentos'
 
   const isOverlayOpen = activePanel !== null
 
@@ -270,11 +432,12 @@ function App() {
             <HolographicBrain
               isThinking={isProcessing}
               isTraining={isImporting}
-              isEconomicMode={isProcessing}
+              isEconomicMode={isProcessing || isBooting}
               indexedDocuments={state.stats.indexedDocuments}
               totalChunks={state.stats.totalChunks}
               statusLabel={neuralStatus}
               interactionCount={interactionCount}
+              onPerformanceSample={setCorePerformance}
             />
           </div>
 
@@ -504,6 +667,69 @@ function App() {
               {activePanel === 'status' ? (
                 <div className="overlay-drawer__content">
                   <div className="overlay-drawer__stats">
+                    <article className="insight-card">
+                      <span className="insight-card__label">Startup</span>
+                      <strong>
+                        {startupHighlightMs !== null
+                          ? `UI pronta em ${formatDuration(startupHighlightMs)}`
+                          : 'Inicializando UI'}
+                      </strong>
+                      <div className="insight-card__rows">
+                        <div className="insight-card__row">
+                          <span>App pronto</span>
+                          <span>{formatDuration(startupMetrics?.appReadyMs ?? null)}</span>
+                        </div>
+                        <div className="insight-card__row">
+                          <span>Janela pronta</span>
+                          <span>{formatDuration(startupMetrics?.windowReadyMs ?? null)}</span>
+                        </div>
+                        <div className="insight-card__row">
+                          <span>Renderer pronto</span>
+                          <span>{formatDuration(startupMetrics?.rendererReadyMs ?? null)}</span>
+                        </div>
+                        <div className="insight-card__row">
+                          <span>Memoria pronta</span>
+                          <span>{formatDuration(startupMetrics?.knowledgeReadyMs ?? null)}</span>
+                        </div>
+                        <div className="insight-card__row">
+                          <span>Ollama pronto</span>
+                          <span>{formatDuration(startupMetrics?.ollamaValidatedMs ?? null)}</span>
+                        </div>
+                      </div>
+                    </article>
+
+                    <article className="insight-card">
+                      <span className="insight-card__label">Estabilidade de resposta</span>
+                      <strong>{sessionStats.responseCount} respostas na sessao</strong>
+                      <p>
+                        Lat media {formatDuration(sessionStats.avgLatencyMs)} (P95{' '}
+                        {formatDuration(sessionStats.p95LatencyMs)}) | Dur media{' '}
+                        {formatDuration(sessionStats.avgDurationMs)}
+                      </p>
+                      <div className="insight-card__rows">
+                        <div className="insight-card__row">
+                          <span>RSS Delta {perfWindowMinutes ? `${perfWindowMinutes}m` : ''}</span>
+                          <span>{formatDeltaBytes(rssDelta)}</span>
+                        </div>
+                        <div className="insight-card__row">
+                          <span>Heap Delta {perfWindowMinutes ? `${perfWindowMinutes}m` : ''}</span>
+                          <span>{formatDeltaBytes(heapDelta)}</span>
+                        </div>
+                      </div>
+                    </article>
+
+                    <article className="insight-card">
+                      <span className="insight-card__label">Central Core</span>
+                      <strong>
+                        {corePerformance ? `${Math.round(corePerformance.fps)} fps` : 'Coletando fps'}
+                      </strong>
+                      <p>
+                        Frame{' '}
+                        {corePerformance ? `${corePerformance.frameTimeMs.toFixed(1)} ms` : 'n/d'} |
+                        Densidade {corePerformance ? corePerformance.densityScale.toFixed(2) : 'n/d'}
+                      </p>
+                    </article>
+
                     <article className="insight-card">
                       <span className="insight-card__label">Ollama Runtime</span>
                       <strong>{runtimeLabel}</strong>

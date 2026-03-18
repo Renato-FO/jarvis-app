@@ -21,6 +21,20 @@ export interface OllamaRuntimeStatus {
   lastError: string | null
 }
 
+export interface StartupMetrics {
+  startedAt: number
+  appReadyMs: number | null
+  windowCreatedMs: number | null
+  windowReadyMs: number | null
+  rendererReadyMs: number | null
+  knowledgeReadyMs: number | null
+  ollamaValidatedMs: number | null
+}
+
+export type RuntimeStatusSnapshot = OllamaRuntimeStatus & {
+  startup?: StartupMetrics
+}
+
 export interface RuntimePerformanceSnapshot {
   timestampMs: number
   cpuUserMicros: number

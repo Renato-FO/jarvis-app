@@ -157,6 +157,21 @@ function projectPoint(radius: number, theta: number, phi: number, rotation: numb
   }
 }
 
+function resolveDeviceProfile() {
+  const hardwareConcurrency = navigator.hardwareConcurrency ?? 4
+  const deviceMemory = Number((navigator as Navigator & { deviceMemory?: number }).deviceMemory ?? 0)
+
+  if (hardwareConcurrency <= 4 || (deviceMemory > 0 && deviceMemory <= 4)) {
+    return { densityScale: 0.72, dprCap: 1.1 }
+  }
+
+  if (hardwareConcurrency >= 12 && (deviceMemory === 0 || deviceMemory >= 12)) {
+    return { densityScale: 1, dprCap: MAX_CANVAS_DPR }
+  }
+
+  return { densityScale: 0.88, dprCap: 1.25 }
+}
+
 export const HolographicBrain = memo(function HolographicBrain({
   isThinking,
   isTraining,
@@ -179,6 +194,7 @@ export const HolographicBrain = memo(function HolographicBrain({
   const isShiftActive = isThinking || isTraining
   const currentPaletteRef = useRef<Palette>(clonePalette(basePalette))
   const targetPaletteRef = useRef<Palette>(clonePalette(basePalette))
+  const deviceProfileRef = useRef(resolveDeviceProfile())
 
   useEffect(() => {
     performanceSampleRef.current = onPerformanceSample
@@ -211,14 +227,14 @@ export const HolographicBrain = memo(function HolographicBrain({
     let connections: Connection[] = []
     let ringLayers: RingLayer[] = []
     let lastDrawTime = 0
-    let adaptiveDensityScale = 1
+    let adaptiveDensityScale = deviceProfileRef.current.densityScale
     let sampleStart = 0
     let sampleFrameCount = 0
     let sampleFrameTimeTotal = 0
 
     const resize = () => {
       const bounds = stage.getBoundingClientRect()
-      const dpr = Math.min(window.devicePixelRatio || 1, MAX_CANVAS_DPR)
+      const dpr = Math.min(window.devicePixelRatio || 1, deviceProfileRef.current.dprCap)
       width = bounds.width
       height = bounds.height
       size = Math.min(width, height)

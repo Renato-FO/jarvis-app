@@ -327,6 +327,27 @@ input {
   font-weight: 600;
 }
 
+.insight-card__rows {
+  margin-top: 10px;
+  display: grid;
+  gap: 6px;
+}
+
+.insight-card__row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 0.68rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: #93b1c2;
+}
+
+.insight-card__row span:last-child {
+  color: #e2f3ff;
+  font-weight: 600;
+}
+
 .memory-inline-stats {
   position: relative;
   z-index: 1;

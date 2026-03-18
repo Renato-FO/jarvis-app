@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
-import { OllamaRuntimeStatus } from '../types/runtime'
+import { RuntimeStatusSnapshot } from '../types/runtime'
 
-const emptyRuntimeStatus: OllamaRuntimeStatus = {
+const emptyRuntimeStatus: RuntimeStatusSnapshot = {
   host: 'http://127.0.0.1:11434',
   phase: 'idle',
   message: 'Aguardando validação do Ollama.',
@@ -16,7 +16,7 @@ const emptyRuntimeStatus: OllamaRuntimeStatus = {
 }
 
 export function useRuntimeStatus() {
-  const [status, setStatus] = useState<OllamaRuntimeStatus>(emptyRuntimeStatus)
+  const [status, setStatus] = useState<RuntimeStatusSnapshot>(emptyRuntimeStatus)
 
   useEffect(() => {
     void window.jarvis.getRuntimeStatus().then((snapshot) => {

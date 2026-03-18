@@ -5,7 +5,7 @@ import {
   KnowledgeProgressEvent,
   KnowledgeState
 } from '../renderer/src/types/knowledge'
-import { OllamaRuntimeStatus, RuntimePerformanceSnapshot } from '../renderer/src/types/runtime'
+import { RuntimePerformanceSnapshot, RuntimeStatusSnapshot } from '../renderer/src/types/runtime'
 import { JarvisResponseContext } from '../renderer/src/types/chat'
 
 declare global {
@@ -18,8 +18,9 @@ declare global {
       onDone: (callback: (success: boolean) => void) => () => void
       transcribe: (buffer: ArrayBuffer) => Promise<string>
       getKnowledgeState: () => Promise<KnowledgeState>
-      getRuntimeStatus: () => Promise<OllamaRuntimeStatus>
+      getRuntimeStatus: () => Promise<RuntimeStatusSnapshot>
       getPerformanceSnapshot: () => Promise<RuntimePerformanceSnapshot>
+      notifyRendererReady: (timestampMs?: number) => void
       selectDocuments: () => Promise<{ canceled: boolean; filePaths: string[] }>
       ingestDocuments: (filePaths: string[]) => Promise<KnowledgeState>
       removeKnowledgeDocument: (documentId: string) => Promise<KnowledgeState>
@@ -31,7 +32,7 @@ declare global {
       ) => Promise<KnowledgeDocumentInsights | null>
       onKnowledgeProgress: (callback: (payload: KnowledgeProgressEvent) => void) => () => void
       onKnowledgeState: (callback: (payload: KnowledgeState) => void) => () => void
-      onRuntimeStatus: (callback: (payload: OllamaRuntimeStatus) => void) => () => void
+      onRuntimeStatus: (callback: (payload: RuntimeStatusSnapshot) => void) => () => void
     }
   }
 }

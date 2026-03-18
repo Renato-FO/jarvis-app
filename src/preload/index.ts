@@ -22,6 +22,11 @@ const jarvisAPI = {
   getKnowledgeState: () => ipcRenderer.invoke('knowledge:get-state'),
   getRuntimeStatus: () => ipcRenderer.invoke('runtime:get-status'),
   getPerformanceSnapshot: () => ipcRenderer.invoke('runtime:get-performance-snapshot'),
+  notifyRendererReady: (timestampMs?: number) =>
+    ipcRenderer.send(
+      'renderer-ready',
+      typeof timestampMs === 'number' ? timestampMs : Date.now()
+    ),
   selectDocuments: () => ipcRenderer.invoke('knowledge:select-documents'),
   ingestDocuments: (filePaths: string[]) => ipcRenderer.invoke('knowledge:ingest-documents', filePaths),
   removeKnowledgeDocument: (documentId: string) =>

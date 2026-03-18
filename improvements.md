@@ -8,13 +8,6 @@ Este documento passa a listar apenas o que ainda falta evoluir.
 
 ## Pendencias ativas
 
-### Abertura e estabilidade
-
-- reduzir tempo de abertura da aplicacao
-- melhorar prontidao inicial da UI em maquinas mais lentas
-- validar estabilidade de resposta em sessoes longas
-- usar as metricas ja instrumentadas para calibrar gargalos reais
-
 ### Produto e memoria
 
 - evoluir governanca da memoria para bases maiores

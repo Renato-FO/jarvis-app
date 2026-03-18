@@ -1,20 +1,5 @@
 # Tasks
 
-## Prioridade 1. Abertura e estabilidade
-
-### Objetivo
-
-- Reduzir tempo de abertura da aplicacao.
-- Melhorar prontidao inicial da UI em maquinas mais lentas.
-- Validar estabilidade de resposta em sessoes longas.
-- Usar as metricas ja instrumentadas para calibrar gargalos reais.
-
-### Resultado esperado
-
-- Inicializacao mais rapida e previsivel.
-- Menor sensacao de travamento no primeiro uso.
-- Melhor confiabilidade durante uso prolongado.
-
 ## Prioridade 2. Produto e memoria
 
 ### Objetivo

@@ -22,6 +22,54 @@ import { ollamaService } from './services/OllamaService'
 const ffmpegPath = require('ffmpeg-static').replace('app.asar', 'app.asar.unpacked')
 const CHAT_HISTORY_BUDGET = 12000
 const CPU_CORE_COUNT = Math.max(1, os.cpus().length)
+const APP_START_MS = Date.now()
+
+type StartupMetricKey =
+  | 'appReadyMs'
+  | 'windowCreatedMs'
+  | 'windowReadyMs'
+  | 'rendererReadyMs'
+  | 'knowledgeReadyMs'
+  | 'ollamaValidatedMs'
+
+interface StartupMetrics {
+  startedAt: number
+  appReadyMs: number | null
+  windowCreatedMs: number | null
+  windowReadyMs: number | null
+  rendererReadyMs: number | null
+  knowledgeReadyMs: number | null
+  ollamaValidatedMs: number | null
+}
+
+const startupMetrics: StartupMetrics = {
+  startedAt: APP_START_MS,
+  appReadyMs: null,
+  windowCreatedMs: null,
+  windowReadyMs: null,
+  rendererReadyMs: null,
+  knowledgeReadyMs: null,
+  ollamaValidatedMs: null
+}
+
+let knowledgeReadyPromise: Promise<void> | null = null
+
+function markStartupMetric(key: StartupMetricKey, absoluteTimestampMs?: number) {
+  if (startupMetrics[key] !== null) {
+    return
+  }
+
+  const resolvedTimestamp =
+    typeof absoluteTimestampMs === 'number' && Number.isFinite(absoluteTimestampMs)
+      ? absoluteTimestampMs
+      : Date.now()
+
+  startupMetrics[key] = Math.max(0, Math.round(resolvedTimestamp - startupMetrics.startedAt))
+}
+
+function getStartupMetricsSnapshot(): StartupMetrics {
+  return { ...startupMetrics }
+}
 
 function getRuntimePerformanceSnapshot() {
   const cpuUsage = process.cpuUsage()
@@ -79,7 +127,7 @@ function trimMessageHistory(
   return selected
 }
 
-function createWindow(): void {
+function createWindow(onReadyToShow?: () => void): BrowserWindow {
   const mainWindow = new BrowserWindow({
     width: 1560,
     height: 940,
@@ -96,6 +144,7 @@ function createWindow(): void {
   })
 
   mainWindow.on('ready-to-show', () => {
+    onReadyToShow?.()
     mainWindow.show()
   })
 
@@ -109,6 +158,8 @@ function createWindow(): void {
   } else {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
+
+  return mainWindow
 }
 
 function printStartupBanner() {
@@ -158,9 +209,15 @@ app
   .whenReady()
   .then(async () => {
     electronApp.setAppUserModelId('com.electron')
+    markStartupMetric('appReadyMs')
+
+    const getRuntimeStatusSnapshot = () => ({
+      ...ollamaService.getStatus(),
+      startup: getStartupMetricsSnapshot()
+    })
 
     const broadcastRuntimeStatus = () => {
-      const status = ollamaService.getStatus()
+      const status = getRuntimeStatusSnapshot()
 
       for (const window of BrowserWindow.getAllWindows()) {
         window.webContents.send('runtime-status', status)
@@ -171,16 +228,53 @@ app
       broadcastRuntimeStatus()
     })
 
-    await knowledgeBase.initialize()
-    try {
-      await ollamaService.ensureStartupValidation()
-      console.log('[Ollama] Ambiente validado com sucesso.')
-    } catch (error) {
-      console.error('[Ollama] Falha na validação inicial.', error)
-    }
-
     app.on('browser-window-created', (_, window) => {
       optimizer.watchWindowShortcuts(window)
+    })
+
+    createWindow(() => {
+      markStartupMetric('windowReadyMs')
+      broadcastRuntimeStatus()
+    })
+    markStartupMetric('windowCreatedMs')
+    broadcastRuntimeStatus()
+
+    const broadcastKnowledgeState = () => {
+      const snapshot = knowledgeBase.getSnapshot()
+      for (const window of BrowserWindow.getAllWindows()) {
+        window.webContents.send('knowledge-state', snapshot)
+      }
+    }
+
+    knowledgeReadyPromise = knowledgeBase
+      .initialize()
+      .then(() => {
+        markStartupMetric('knowledgeReadyMs')
+        broadcastRuntimeStatus()
+        broadcastKnowledgeState()
+      })
+      .catch((error) => {
+        markStartupMetric('knowledgeReadyMs')
+        broadcastRuntimeStatus()
+        console.error('[KnowledgeBase] Falha ao inicializar.', error)
+      })
+
+    void ollamaService
+      .ensureStartupValidation()
+      .then(() => {
+        markStartupMetric('ollamaValidatedMs')
+        broadcastRuntimeStatus()
+        console.log('[Ollama] Ambiente validado com sucesso.')
+      })
+      .catch((error) => {
+        markStartupMetric('ollamaValidatedMs')
+        broadcastRuntimeStatus()
+        console.error('[Ollama] Falha na validação inicial.', error)
+      })
+
+    ipcMain.on('renderer-ready', (_event, timestampMs?: number) => {
+      markStartupMetric('rendererReadyMs', timestampMs)
+      broadcastRuntimeStatus()
     })
 
     ipcMain.on('ask-jarvis', async (event: IpcMainEvent, userMessage: string, messages) => {
@@ -310,7 +404,7 @@ Se houver incerteza, deixe isso claro de forma objetiva.
     })
 
     ipcMain.handle('runtime:get-status', async () => {
-      return ollamaService.getStatus()
+      return getRuntimeStatusSnapshot()
     })
 
     ipcMain.handle('runtime:get-performance-snapshot', async () => {
@@ -342,6 +436,7 @@ Se houver incerteza, deixe isso claro de forma objetiva.
     })
 
     ipcMain.handle('knowledge:ingest-documents', async (event, filePaths: string[]) => {
+      await knowledgeReadyPromise
       if (!Array.isArray(filePaths) || filePaths.length === 0) {
         return knowledgeBase.getSnapshot()
       }
@@ -363,6 +458,7 @@ Se houver incerteza, deixe isso claro de forma objetiva.
     })
 
     ipcMain.handle('knowledge:remove-document', async (event, documentId: string) => {
+      await knowledgeReadyPromise
       try {
         const removed = await knowledgeBase.removeDocumentById(String(documentId ?? ''))
         event.sender.send('knowledge-progress', {
@@ -385,6 +481,7 @@ Se houver incerteza, deixe isso claro de forma objetiva.
     })
 
     ipcMain.handle('knowledge:reprocess-document', async (event, documentId: string) => {
+      await knowledgeReadyPromise
       const resolvedDocumentId = String(documentId ?? '')
 
       if (!resolvedDocumentId) {
@@ -408,6 +505,7 @@ Se houver incerteza, deixe isso claro de forma objetiva.
     })
 
     ipcMain.handle('knowledge:clear-documents', async (event) => {
+      await knowledgeReadyPromise
       try {
         await knowledgeBase.clearAllDocuments()
         event.sender.send('knowledge-progress', {
@@ -429,6 +527,7 @@ Se houver incerteza, deixe isso claro de forma objetiva.
     ipcMain.handle(
       'knowledge:get-document-insights',
       async (_event, documentId: string, chunkLimit?: number) => {
+        await knowledgeReadyPromise
         return knowledgeBase.getDocumentInsights(String(documentId ?? ''), Number(chunkLimit ?? 8))
       }
     )
@@ -523,8 +622,6 @@ Se houver incerteza, deixe isso claro de forma objetiva.
       const { systemPreferences } = require('electron')
       await systemPreferences.askForMediaAccess('microphone')
     }
-
-    createWindow()
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()
