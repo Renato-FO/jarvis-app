@@ -27,8 +27,3 @@ export interface Message {
   sources?: MessageSource[]
   retrievalMode?: 'fact' | 'exploratory'
 }
-
-export interface ChatState {
-  messages: Message[]
-  isLoading: boolean
-}
