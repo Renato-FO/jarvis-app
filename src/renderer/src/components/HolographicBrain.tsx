@@ -4,10 +4,19 @@ import { memo, useEffect, useRef } from 'react'
 interface Props {
   isThinking: boolean
   isTraining: boolean
+  isEconomicMode: boolean
   indexedDocuments: number
   totalChunks: number
   statusLabel: string
   interactionCount: number
+  onPerformanceSample?: (sample: HolographicBrainPerformanceSample) => void
+}
+
+export interface HolographicBrainPerformanceSample {
+  fps: number
+  frameTimeMs: number
+  densityScale: number
+  timestampMs: number
 }
 
 interface OrbitalPoint {
@@ -109,6 +118,8 @@ const HOLO_PALETTES: Palette[] = [
 
 const MAX_CANVAS_DPR = 1.35
 const TARGET_FRAME_MS = 1000 / 45
+const ECONOMIC_DENSITY_SCALE = 0.58
+const PERF_SAMPLE_WINDOW_MS = 1200
 
 function clonePalette(palette: Palette): Palette {
   return {
@@ -149,13 +160,18 @@ function projectPoint(radius: number, theta: number, phi: number, rotation: numb
 export const HolographicBrain = memo(function HolographicBrain({
   isThinking,
   isTraining,
+  isEconomicMode,
   indexedDocuments,
   totalChunks,
   statusLabel,
-  interactionCount
+  interactionCount,
+  onPerformanceSample
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const stageRef = useRef<HTMLDivElement>(null)
+  const resizeRef = useRef<(() => void) | null>(null)
+  const economyModeRef = useRef(isEconomicMode)
+  const performanceSampleRef = useRef(onPerformanceSample)
   const basePalette = HOLO_PALETTES[0]
   const transientPalette =
     HOLO_PALETTES[((Math.max(interactionCount, 1) - 1) % (HOLO_PALETTES.length - 1)) + 1] ??
@@ -163,6 +179,15 @@ export const HolographicBrain = memo(function HolographicBrain({
   const isShiftActive = isThinking || isTraining
   const currentPaletteRef = useRef<Palette>(clonePalette(basePalette))
   const targetPaletteRef = useRef<Palette>(clonePalette(basePalette))
+
+  useEffect(() => {
+    performanceSampleRef.current = onPerformanceSample
+  }, [onPerformanceSample])
+
+  useEffect(() => {
+    economyModeRef.current = isEconomicMode
+    resizeRef.current?.()
+  }, [isEconomicMode])
 
   useEffect(() => {
     targetPaletteRef.current = clonePalette(isShiftActive ? transientPalette : basePalette)
@@ -186,6 +211,10 @@ export const HolographicBrain = memo(function HolographicBrain({
     let connections: Connection[] = []
     let ringLayers: RingLayer[] = []
     let lastDrawTime = 0
+    let adaptiveDensityScale = 1
+    let sampleStart = 0
+    let sampleFrameCount = 0
+    let sampleFrameTimeTotal = 0
 
     const resize = () => {
       const bounds = stage.getBoundingClientRect()
@@ -193,13 +222,18 @@ export const HolographicBrain = memo(function HolographicBrain({
       width = bounds.width
       height = bounds.height
       size = Math.min(width, height)
-      const densityFactor = (size >= 680 ? 1 : size >= 520 ? 0.82 : 0.68) * (dpr > 1.2 ? 0.9 : 1)
+      const baseDensityFactor = (size >= 680 ? 1 : size >= 520 ? 0.82 : 0.68) * (dpr > 1.2 ? 0.9 : 1)
+      const economyDensity = economyModeRef.current ? ECONOMIC_DENSITY_SCALE : 1
+      const densityFactor = Math.max(
+        0.35,
+        baseDensityFactor * adaptiveDensityScale * economyDensity
+      )
 
-      const outerPointCount = Math.max(820, Math.round(1500 * densityFactor))
-      const innerPointCount = Math.max(320, Math.round(620 * densityFactor))
-      const pulseCount = Math.max(8, Math.round(10 * densityFactor))
-      const connectionCount = Math.max(28, Math.round(44 * densityFactor))
-      const ringCount = Math.max(6, Math.round(7 * densityFactor))
+      const outerPointCount = Math.max(420, Math.round(1500 * densityFactor))
+      const innerPointCount = Math.max(180, Math.round(620 * densityFactor))
+      const pulseCount = Math.max(4, Math.round(10 * densityFactor))
+      const connectionCount = Math.max(16, Math.round(44 * densityFactor))
+      const ringCount = Math.max(4, Math.round(7 * densityFactor))
 
       canvas.width = Math.max(1, Math.floor(width * dpr))
       canvas.height = Math.max(1, Math.floor(height * dpr))
@@ -246,6 +280,8 @@ export const HolographicBrain = memo(function HolographicBrain({
         dash: index % 2 === 0 ? [8 + index, 14 + index * 2] : [20 + index * 2, 12 + index]
       }))
     }
+
+    resizeRef.current = resize
 
     const drawBrainCurves = (palette: Palette) => {
       const lobeOffset = size * 0.055
@@ -321,16 +357,53 @@ export const HolographicBrain = memo(function HolographicBrain({
     const draw = (timestamp: number) => {
       if (document.hidden) {
         lastDrawTime = timestamp
+        sampleStart = timestamp
         animationFrame = window.requestAnimationFrame(draw)
         return
       }
 
-      if (timestamp - lastDrawTime < TARGET_FRAME_MS) {
+      const elapsedSinceLastFrame = lastDrawTime === 0 ? TARGET_FRAME_MS : timestamp - lastDrawTime
+      if (elapsedSinceLastFrame < TARGET_FRAME_MS) {
         animationFrame = window.requestAnimationFrame(draw)
         return
       }
 
       lastDrawTime = timestamp
+      if (sampleStart === 0) {
+        sampleStart = timestamp
+      }
+
+      sampleFrameCount += 1
+      sampleFrameTimeTotal += elapsedSinceLastFrame
+
+      const sampledTime = timestamp - sampleStart
+      if (sampledTime >= PERF_SAMPLE_WINDOW_MS && sampleFrameCount > 0) {
+        const fps = (sampleFrameCount * 1000) / sampledTime
+        const frameTimeMs = sampleFrameTimeTotal / sampleFrameCount
+
+        performanceSampleRef.current?.({
+          fps,
+          frameTimeMs,
+          densityScale: adaptiveDensityScale * (economyModeRef.current ? ECONOMIC_DENSITY_SCALE : 1),
+          timestampMs: Date.now()
+        })
+
+        const priorAdaptiveDensity = adaptiveDensityScale
+        if (frameTimeMs > 25) {
+          adaptiveDensityScale = Math.max(0.62, adaptiveDensityScale * 0.92)
+        } else if (frameTimeMs < 19 && !economyModeRef.current) {
+          adaptiveDensityScale = Math.min(1, adaptiveDensityScale * 1.05)
+        }
+
+        if (Math.abs(adaptiveDensityScale - priorAdaptiveDensity) >= 0.06) {
+          resize()
+        }
+
+        sampleStart = timestamp
+        sampleFrameCount = 0
+        sampleFrameTimeTotal = 0
+      }
+
       const time = timestamp * 0.001
 
       currentPaletteRef.current = {
@@ -542,6 +615,7 @@ export const HolographicBrain = memo(function HolographicBrain({
     return () => {
       window.cancelAnimationFrame(animationFrame)
       resizeObserver.disconnect()
+      resizeRef.current = null
     }
   }, [])
 

@@ -105,21 +105,35 @@ Este arquivo resume o que foi implementado no `jarvis-app`, o estado atual e os 
 
 ## Proximos passos prioritarios
 
-### Curto prazo
+### Checklist priorizada
 
-- Medir latencia/CPU com perfilador durante respostas longas.
-- Ajustar `STREAM_FLUSH_INTERVAL_MS` por hardware (ex: 40 -> 60/80ms quando necessario).
-- Aplicar "modo economico" do nucleo durante `isProcessing` para maquinas mais fracas.
+### Prioridade 1. Modo economico e performance
 
-### Produto e memoria
+- [x] Aplicar modo economico automatico do nucleo durante `isProcessing`.
+- [x] Reduzir adicionalmente a densidade visual enquanto o streaming estiver ativo.
+- [x] Ajustar `STREAM_FLUSH_INTERVAL_MS` por perfil de maquina.
+- [x] Evoluir para ajuste dinamico de flush interval durante uso real.
+- [x] Medir latencia, CPU e uso de memoria durante respostas longas.
+- [x] Medir FPS e tempo de frame em cenarios longos para validar impacto visual.
 
-- Tornar `Memory Bay` operacional (remover, reprocessar, limpar, visualizar chunks/prepared).
-- Exibir fontes usadas diretamente na UI de resposta.
+### Prioridade 2. Produto e transparencia da memoria
 
-### Qualidade de retrieval
+- [x] Tornar a `Memory Bay` operacional para remover documentos.
+- [x] Tornar a `Memory Bay` operacional para reprocessar documentos.
+- [x] Tornar a `Memory Bay` operacional para limpar documentos/base.
+- [x] Exibir preview de documento preparado.
+- [x] Exibir preview dos chunks por documento.
+- [x] Deixar status de reindexacao mais explicito no fluxo.
+- [x] Exibir fontes usadas diretamente na UI de resposta.
 
-- Melhorar ranking factual com filtros por documento/colecao.
-- Evoluir para estrategia hibrida (keyword + semantica + reranking).
+Status da prioridade: concluida.
+
+### Prioridade 3. Qualidade de retrieval e resposta documental
+
+- [ ] Melhorar ranking factual com filtros por documento/colecao.
+- [ ] Evoluir para estrategia hibrida de retrieval (`keyword` + semantica).
+- [ ] Adicionar reranking mais forte nos resultados recuperados.
+- [ ] Reduzir respostas genericas quando houver contexto util disponivel.
 
 ## Arquivos mais impactados
 

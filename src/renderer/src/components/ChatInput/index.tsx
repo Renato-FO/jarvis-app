@@ -78,7 +78,7 @@ export function ChatInput({ onSend, disabled }: Props) {
         <button
           onClick={() => (isRecording ? stopRecording() : startRecording())}
           type="button"
-          className={`absolute bottom-3 right-3 flex h-8 w-8 items-center justify-center rounded-full border transition-all ${
+          className={`absolute bottom-3 right-3 flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border transition-all ${
             isRecording
               ? 'border-rose-400/70 bg-rose-500/20 text-rose-100'
               : 'border-cyan-300/30 bg-cyan-300/8 text-cyan-100'
@@ -93,7 +93,7 @@ export function ChatInput({ onSend, disabled }: Props) {
         onClick={handleSend}
         disabled={disabled || !input.trim()}
         type="button"
-        className="chat-input-shell__send h-14 rounded-2xl border border-cyan-300/40 bg-cyan-300/14 px-5 text-xs font-semibold uppercase tracking-[0.24em] text-cyan-100 transition-all hover:border-cyan-200/60 hover:bg-cyan-300/20 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-500"
+        className="chat-input-shell__send h-14 cursor-pointer rounded-2xl border border-cyan-300/40 bg-cyan-300/14 px-5 text-xs font-semibold uppercase tracking-[0.24em] text-cyan-100 transition-all hover:border-cyan-200/60 hover:bg-cyan-300/20 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-500"
       >
         Enviar
       </button>

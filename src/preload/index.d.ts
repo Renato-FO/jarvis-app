@@ -1,10 +1,12 @@
 import { ElectronAPI } from '@electron-toolkit/preload'
 import { Message } from '../renderer/src/types/chat'
 import {
+  KnowledgeDocumentInsights,
   KnowledgeProgressEvent,
   KnowledgeState
 } from '../renderer/src/types/knowledge'
-import { OllamaRuntimeStatus } from '../renderer/src/types/runtime'
+import { OllamaRuntimeStatus, RuntimePerformanceSnapshot } from '../renderer/src/types/runtime'
+import { JarvisResponseContext } from '../renderer/src/types/chat'
 
 declare global {
   interface Window {
@@ -12,12 +14,21 @@ declare global {
     jarvis: {
       sendMessage: (message: string, messages: Message[]) => void
       onResponse: (callback: (chunk: string) => void) => () => void
+      onResponseContext: (callback: (payload: JarvisResponseContext) => void) => () => void
       onDone: (callback: (success: boolean) => void) => () => void
       transcribe: (buffer: ArrayBuffer) => Promise<string>
       getKnowledgeState: () => Promise<KnowledgeState>
       getRuntimeStatus: () => Promise<OllamaRuntimeStatus>
+      getPerformanceSnapshot: () => Promise<RuntimePerformanceSnapshot>
       selectDocuments: () => Promise<{ canceled: boolean; filePaths: string[] }>
       ingestDocuments: (filePaths: string[]) => Promise<KnowledgeState>
+      removeKnowledgeDocument: (documentId: string) => Promise<KnowledgeState>
+      reprocessKnowledgeDocument: (documentId: string) => Promise<KnowledgeState>
+      clearKnowledgeDocuments: () => Promise<KnowledgeState>
+      getKnowledgeDocumentInsights: (
+        documentId: string,
+        chunkLimit?: number
+      ) => Promise<KnowledgeDocumentInsights | null>
       onKnowledgeProgress: (callback: (payload: KnowledgeProgressEvent) => void) => () => void
       onKnowledgeState: (callback: (payload: KnowledgeState) => void) => () => void
       onRuntimeStatus: (callback: (payload: OllamaRuntimeStatus) => void) => () => void

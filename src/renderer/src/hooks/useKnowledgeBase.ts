@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import {
   KnowledgeDocument,
+  KnowledgeDocumentInsights,
   KnowledgeProgressEvent,
   KnowledgeState
 } from '../types/knowledge'
@@ -11,6 +12,7 @@ const emptyState: KnowledgeState = {
     indexedDocuments: 0,
     processingDocuments: 0,
     erroredDocuments: 0,
+    reindexDocuments: 0,
     totalChunks: 0,
     isReady: false
   }
@@ -23,6 +25,7 @@ function normalizeState(snapshot: Partial<KnowledgeState> | null | undefined): K
       indexedDocuments: Number(snapshot?.stats?.indexedDocuments ?? 0),
       processingDocuments: Number(snapshot?.stats?.processingDocuments ?? 0),
       erroredDocuments: Number(snapshot?.stats?.erroredDocuments ?? 0),
+      reindexDocuments: Number(snapshot?.stats?.reindexDocuments ?? 0),
       totalChunks: Number(snapshot?.stats?.totalChunks ?? 0),
       isReady: Boolean(snapshot?.stats?.isReady)
     }
@@ -46,10 +49,14 @@ export function useKnowledgeBase() {
   const [state, setState] = useState<KnowledgeState>(emptyState)
   const [activity, setActivity] = useState<KnowledgeProgressEvent | null>(null)
   const [isImporting, setIsImporting] = useState(false)
+  const [insightsByDocument, setInsightsByDocument] = useState<Record<string, KnowledgeDocumentInsights>>({})
+  const [insightLoadingByDocument, setInsightLoadingByDocument] = useState<Record<string, boolean>>({})
 
   useEffect(() => {
     void window.jarvis.getKnowledgeState().then((snapshot) => {
-      setState(normalizeState(snapshot))
+      const normalized = normalizeState(snapshot)
+      setState(normalized)
+      setIsImporting(normalized.stats.processingDocuments > 0)
     })
 
     const unsubscribeProgress = window.jarvis.onKnowledgeProgress((event) => {
@@ -87,10 +94,60 @@ export function useKnowledgeBase() {
     await window.jarvis.ingestDocuments(filePaths)
   }
 
+  const removeDocument = async (documentId: string) => {
+    await window.jarvis.removeKnowledgeDocument(documentId)
+    setInsightsByDocument((prev) => {
+      const next = { ...prev }
+      delete next[documentId]
+      return next
+    })
+    setInsightLoadingByDocument((prev) => {
+      const next = { ...prev }
+      delete next[documentId]
+      return next
+    })
+  }
+
+  const reprocessDocument = async (documentId: string) => {
+    await window.jarvis.reprocessKnowledgeDocument(documentId)
+  }
+
+  const clearDocuments = async () => {
+    await window.jarvis.clearKnowledgeDocuments()
+    setInsightsByDocument({})
+    setInsightLoadingByDocument({})
+  }
+
+  const loadDocumentInsights = async (documentId: string, force = false) => {
+    if (!documentId) return null
+
+    if (!force && insightsByDocument[documentId]) {
+      return insightsByDocument[documentId]
+    }
+
+    setInsightLoadingByDocument((prev) => ({ ...prev, [documentId]: true }))
+
+    try {
+      const insights = await window.jarvis.getKnowledgeDocumentInsights(documentId, 8)
+      if (insights) {
+        setInsightsByDocument((prev) => ({ ...prev, [documentId]: insights }))
+      }
+      return insights
+    } finally {
+      setInsightLoadingByDocument((prev) => ({ ...prev, [documentId]: false }))
+    }
+  }
+
   return {
     state,
     activity,
     isImporting,
-    importDocuments
+    importDocuments,
+    removeDocument,
+    reprocessDocument,
+    clearDocuments,
+    loadDocumentInsights,
+    insightsByDocument,
+    insightLoadingByDocument
   }
 }

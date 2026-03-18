@@ -18,6 +18,12 @@ export class DocumentFormatter {
     fs.mkdirSync(this.outputDir, { recursive: true })
   }
 
+  buildPreparedOutputPath(filePath: string): string {
+    const hash = crypto.createHash('sha1').update(path.resolve(filePath)).digest('hex').slice(0, 12)
+    const baseName = path.basename(filePath, path.extname(filePath)).replace(/[^\w\-]+/g, '-')
+    return path.join(this.outputDir, `${baseName}-${hash}.md`)
+  }
+
   prepareForAI({ filePath, extension, rawContent }: PrepareDocumentInput): PrepareDocumentOutput {
     const normalizedText = this.normalizeRawText(String(rawContent ?? ''))
     const structuredBody = this.formatByExtension(normalizedText, extension)
@@ -220,9 +226,7 @@ export class DocumentFormatter {
   }
 
   private writePreparedVersion(filePath: string, content: string): string {
-    const hash = crypto.createHash('sha1').update(path.resolve(filePath)).digest('hex').slice(0, 12)
-    const baseName = path.basename(filePath, path.extname(filePath)).replace(/[^\w\-]+/g, '-')
-    const outputPath = path.join(this.outputDir, `${baseName}-${hash}.md`)
+    const outputPath = this.buildPreparedOutputPath(filePath)
 
     fs.writeFileSync(outputPath, content, 'utf-8')
     return outputPath

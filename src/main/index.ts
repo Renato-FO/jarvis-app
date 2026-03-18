@@ -21,6 +21,23 @@ import { ollamaService } from './services/OllamaService'
 
 const ffmpegPath = require('ffmpeg-static').replace('app.asar', 'app.asar.unpacked')
 const CHAT_HISTORY_BUDGET = 12000
+const CPU_CORE_COUNT = Math.max(1, os.cpus().length)
+
+function getRuntimePerformanceSnapshot() {
+  const cpuUsage = process.cpuUsage()
+  const memoryUsage = process.memoryUsage()
+
+  return {
+    timestampMs: Date.now(),
+    cpuUserMicros: cpuUsage.user,
+    cpuSystemMicros: cpuUsage.system,
+    cpuCount: CPU_CORE_COUNT,
+    rssBytes: memoryUsage.rss,
+    heapUsedBytes: memoryUsage.heapUsed,
+    heapTotalBytes: memoryUsage.heapTotal,
+    externalBytes: memoryUsage.external
+  }
+}
 
 function getErrorDetails(error: unknown) {
   if (error instanceof Error) {
@@ -181,6 +198,10 @@ app
                 .map((source) => `${source.id}: ${source.source}`)
                 .join('\n')
             : 'Nenhuma fonte recuperada.'
+        event.sender.send('jarvis-context', {
+          sources: relevantContext.sources,
+          retrievalMode: relevantContext.retrievalMode
+        })
 
         console.log(
           [
@@ -289,6 +310,10 @@ Se houver incerteza, deixe isso claro de forma objetiva.
       return ollamaService.getStatus()
     })
 
+    ipcMain.handle('runtime:get-performance-snapshot', async () => {
+      return getRuntimePerformanceSnapshot()
+    })
+
     ipcMain.handle('knowledge:select-documents', async (event) => {
       const window = BrowserWindow.fromWebContents(event.sender)
       const supportedExtensions = knowledgeBase.getSupportedExtensions()
@@ -333,6 +358,77 @@ Se houver incerteza, deixe isso claro de forma objetiva.
 
       return knowledgeBase.getSnapshot()
     })
+
+    ipcMain.handle('knowledge:remove-document', async (event, documentId: string) => {
+      try {
+        const removed = await knowledgeBase.removeDocumentById(String(documentId ?? ''))
+        event.sender.send('knowledge-progress', {
+          type: 'document-removed',
+          record: removed ?? undefined,
+          message: removed
+            ? `${removed.name} removido da memoria.`
+            : 'Documento nao encontrado para remocao.'
+        })
+      } catch (error: any) {
+        event.sender.send('knowledge-progress', {
+          type: 'document-error',
+          error: error?.message || 'Falha ao remover documento.'
+        })
+      }
+
+      const snapshot = knowledgeBase.getSnapshot()
+      event.sender.send('knowledge-state', snapshot)
+      return snapshot
+    })
+
+    ipcMain.handle('knowledge:reprocess-document', async (event, documentId: string) => {
+      const resolvedDocumentId = String(documentId ?? '')
+
+      if (!resolvedDocumentId) {
+        return knowledgeBase.getSnapshot()
+      }
+
+      void knowledgeBase
+        .reprocessDocumentById(resolvedDocumentId, (progress) => {
+          event.sender.send('knowledge-progress', progress)
+          event.sender.send('knowledge-state', knowledgeBase.getSnapshot())
+        })
+        .catch((error: any) => {
+          event.sender.send('knowledge-progress', {
+            type: 'document-error',
+            error: error?.message || 'Falha ao reprocessar documento.'
+          })
+          event.sender.send('knowledge-state', knowledgeBase.getSnapshot())
+        })
+
+      return knowledgeBase.getSnapshot()
+    })
+
+    ipcMain.handle('knowledge:clear-documents', async (event) => {
+      try {
+        await knowledgeBase.clearAllDocuments()
+        event.sender.send('knowledge-progress', {
+          type: 'memory-cleared',
+          message: 'Memoria limpa com sucesso.'
+        })
+      } catch (error: any) {
+        event.sender.send('knowledge-progress', {
+          type: 'document-error',
+          error: error?.message || 'Falha ao limpar memoria.'
+        })
+      }
+
+      const snapshot = knowledgeBase.getSnapshot()
+      event.sender.send('knowledge-state', snapshot)
+      return snapshot
+    })
+
+    ipcMain.handle(
+      'knowledge:get-document-insights',
+      async (_event, documentId: string, chunkLimit?: number) => {
+        return knowledgeBase.getDocumentInsights(String(documentId ?? ''), Number(chunkLimit ?? 8))
+      }
+    )
 
     ipcMain.handle('transcribe', async (_event, buffer: ArrayBuffer) => {
       const timestamp = Date.now()

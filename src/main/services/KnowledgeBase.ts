@@ -2,6 +2,7 @@ import { app } from 'electron'
 import fs from 'fs'
 import path from 'path'
 import { createRequire } from 'module'
+import Database from 'better-sqlite3'
 import { Document } from '@langchain/core/documents'
 import { MemoryVectorStore } from '@langchain/classic/vectorstores/memory'
 import { MarkdownTextSplitter, RecursiveCharacterTextSplitter } from '@langchain/textsplitters'
@@ -19,7 +20,12 @@ const EMBEDDING_MIN_CHARS = 120
 const SEARCH_RESULT_LIMIT = 6
 const MAX_CONTEXT_CHARS = 5200
 const MAX_CONTEXT_HIT_CHARS = 1200
-const VECTOR_STORE_FILENAME = 'jarvis-memory-langchain.json'
+const PREPARED_PREVIEW_MAX_CHARS = 2600
+const DEFAULT_CHUNK_PREVIEW_LIMIT = 8
+const CHUNK_PREVIEW_MAX_CHARS = 320
+const KNOWLEDGE_DB_FILENAME = 'knowledge.db'
+const LEGACY_VECTOR_STORE_FILENAME = 'jarvis-memory-langchain.json'
+const LEGACY_MANIFEST_FILENAME = 'docs.json'
 
 function getErrorDetails(error: unknown) {
   if (error instanceof Error) {
@@ -46,7 +52,7 @@ function buildDiagnosticError(scope: string, context: Record<string, unknown>, e
   )
 }
 
-export type KnowledgeDocumentStatus = 'ready' | 'processing' | 'error'
+export type KnowledgeDocumentStatus = 'ready' | 'processing' | 'error' | 'reindex-required'
 
 export interface KnowledgeDocumentRecord {
   id: string
@@ -66,9 +72,28 @@ export interface KnowledgeSnapshot {
     indexedDocuments: number
     processingDocuments: number
     erroredDocuments: number
+    reindexDocuments: number
     totalChunks: number
     isReady: boolean
   }
+}
+
+export interface KnowledgeChunkPreview {
+  id: string
+  chunkIndex: number
+  childChunkIndex: number
+  length: number
+  preview: string
+}
+
+export interface KnowledgeDocumentInsights {
+  documentId: string
+  preparedPath: string | null
+  preparedPreview: string
+  preparedLength: number
+  totalChunks: number
+  chunkPreviews: KnowledgeChunkPreview[]
+  preparedMissing: boolean
 }
 
 export interface RetrievedContextSource {
@@ -86,11 +111,14 @@ export interface RetrievedContext {
 export interface KnowledgeProgressEvent {
   type:
     | 'document-started'
+    | 'document-reprocess-started'
     | 'document-formatting'
     | 'chunk-progress'
     | 'document-complete'
     | 'document-error'
     | 'document-skipped'
+    | 'document-removed'
+    | 'memory-cleared'
   record?: KnowledgeDocumentRecord
   current?: number
   total?: number
@@ -125,8 +153,10 @@ const SUPPORTED_EXTENSIONS = new Set([
 export class KnowledgeBase {
   private vectorStore: MemoryVectorStore | null = null
   private embeddings: OllamaEmbeddings | null = null
-  private memoryPath = ''
-  private manifestPath = ''
+  private database: Database.Database | null = null
+  private databasePath = ''
+  private legacyMemoryPath = ''
+  private legacyManifestPath = ''
   private preparedDocumentsDir = ''
   private processedFiles: KnowledgeDocumentRecord[] = []
   private activeDocuments = new Set<string>()
@@ -136,28 +166,35 @@ export class KnowledgeBase {
     const rootDir = path.join(app.getPath('userData'), 'knowledge')
     fs.mkdirSync(rootDir, { recursive: true })
 
-    this.memoryPath = path.join(rootDir, VECTOR_STORE_FILENAME)
-    this.manifestPath = path.join(rootDir, 'docs.json')
+    this.databasePath = path.join(rootDir, KNOWLEDGE_DB_FILENAME)
+    this.legacyMemoryPath = path.join(rootDir, LEGACY_VECTOR_STORE_FILENAME)
+    this.legacyManifestPath = path.join(rootDir, LEGACY_MANIFEST_FILENAME)
     this.preparedDocumentsDir = path.join(rootDir, 'prepared')
     this.formatter = new DocumentFormatter(this.preparedDocumentsDir)
     this.embeddings = this.createEmbeddings()
     this.vectorStore = await MemoryVectorStore.fromExistingIndex(this.embeddings)
+    this.openDatabase()
 
-    console.log(`[KnowledgeBase][LangChain] Memory store: ${this.memoryPath}`)
-    console.log(`[KnowledgeBase][LangChain] Manifest: ${this.manifestPath}`)
+    console.log(`[KnowledgeBase][SQLite] Database: ${this.databasePath}`)
+    console.log(`[KnowledgeBase][SQLite] Legacy vectors: ${this.legacyMemoryPath}`)
+    console.log(`[KnowledgeBase][SQLite] Legacy manifest: ${this.legacyManifestPath}`)
 
     this.loadManifest()
     await this.restoreVectorStore()
+    await this.migrateLegacyStorageIfNeeded()
 
-    if (!fs.existsSync(this.memoryPath) && this.processedFiles.length > 0) {
+    if (
+      this.getPersistedVectorCount() === 0 &&
+      this.processedFiles.some((record) => record.status === 'ready')
+    ) {
       this.processedFiles = this.processedFiles.map((record) => ({
         ...record,
-        status: 'error',
-        lastError: 'Reindexação necessária após migração do RAG para LangChain.'
+        status: 'reindex-required',
+        lastError: 'Reindexacao necessaria para reconstruir vetores no banco local.'
       }))
       this.saveManifest()
       console.warn(
-        '[KnowledgeBase][LangChain] Manifest antigo detectado sem índice vetorial LangChain. Reindexação necessária.'
+        '[KnowledgeBase][SQLite] Documentos detectados sem vetores persistidos. Reindexacao necessaria.'
       )
     }
   }
@@ -179,6 +216,7 @@ export class KnowledgeBase {
         indexedDocuments: documents.filter((doc) => doc.status === 'ready').length,
         processingDocuments: documents.filter((doc) => doc.status === 'processing').length,
         erroredDocuments: documents.filter((doc) => doc.status === 'error').length,
+        reindexDocuments: documents.filter((doc) => doc.status === 'reindex-required').length,
         totalChunks: documents.reduce((sum, doc) => sum + doc.chunks, 0),
         isReady: this.vectorStore !== null
       }
@@ -194,9 +232,115 @@ export class KnowledgeBase {
     }
   }
 
+  async removeDocumentById(documentId: string): Promise<KnowledgeDocumentRecord | null> {
+    const record = this.findRecordById(documentId)
+    if (!record) {
+      return null
+    }
+
+    if (this.activeDocuments.has(path.resolve(record.path))) {
+      throw new Error(`Nao e possivel remover ${record.name} enquanto ele esta em processamento.`)
+    }
+
+    this.removeVectorsForDocument(documentId)
+    this.processedFiles = this.processedFiles.filter((item) => item.id !== documentId)
+    this.deletePreparedArtifact(record.path)
+    await this.saveToDisk()
+    this.saveManifest()
+
+    return record
+  }
+
+  async reprocessDocumentById(
+    documentId: string,
+    onProgress?: (event: KnowledgeProgressEvent) => void
+  ): Promise<KnowledgeDocumentRecord | null> {
+    const record = this.findRecordById(documentId)
+    if (!record) {
+      return null
+    }
+
+    onProgress?.({
+      type: 'document-reprocess-started',
+      record,
+      message: `Reprocessando ${record.name} para atualizar a indexacao.`
+    })
+
+    return this.ingestDocument(record.path, onProgress, { force: true })
+  }
+
+  async clearAllDocuments(): Promise<void> {
+    if (this.activeDocuments.size > 0) {
+      throw new Error('Nao e possivel limpar a memoria enquanto ha documentos em processamento.')
+    }
+
+    this.processedFiles = []
+    if (this.vectorStore) {
+      this.vectorStore.memoryVectors.splice(0, this.vectorStore.memoryVectors.length)
+    }
+    this.clearPreparedArtifacts()
+    await this.saveToDisk()
+    this.saveManifest()
+  }
+
+  getDocumentInsights(documentId: string, chunkLimit = DEFAULT_CHUNK_PREVIEW_LIMIT) {
+    const record = this.findRecordById(documentId)
+    if (!record) {
+      return null
+    }
+
+    const safeChunkLimit = Math.max(1, Math.min(24, Number(chunkLimit) || DEFAULT_CHUNK_PREVIEW_LIMIT))
+    const preparedPath = this.resolvePreparedPath(record.path)
+    const preparedContent =
+      preparedPath && fs.existsSync(preparedPath) ? fs.readFileSync(preparedPath, 'utf-8') : ''
+
+    const vectors = this.vectorStore?.memoryVectors ?? []
+    const relatedVectors = vectors
+      .filter((vector) => String((vector.metadata as Record<string, unknown>)?.documentId ?? '') === record.id)
+      .sort((left, right) => {
+        const leftChunkIndex = Number((left.metadata as Record<string, unknown>)?.chunkIndex ?? 0)
+        const rightChunkIndex = Number((right.metadata as Record<string, unknown>)?.chunkIndex ?? 0)
+        if (leftChunkIndex !== rightChunkIndex) {
+          return leftChunkIndex - rightChunkIndex
+        }
+
+        const leftChildIndex = Number((left.metadata as Record<string, unknown>)?.childChunkIndex ?? 0)
+        const rightChildIndex = Number((right.metadata as Record<string, unknown>)?.childChunkIndex ?? 0)
+        return leftChildIndex - rightChildIndex
+      })
+
+    const chunkPreviews: KnowledgeChunkPreview[] = relatedVectors
+      .slice(0, safeChunkLimit)
+      .map((vector, index) => {
+        const metadata = (vector.metadata ?? {}) as Record<string, unknown>
+        const rawContent = String(vector.content ?? '')
+
+        return {
+          id: String(vector.id ?? `${record.id}-chunk-${index}`),
+          chunkIndex: Number(metadata.chunkIndex ?? index),
+          childChunkIndex: Number(metadata.childChunkIndex ?? 0),
+          length: rawContent.length,
+          preview: this.trimToBudget(rawContent, CHUNK_PREVIEW_MAX_CHARS)
+        }
+      })
+
+    const preparedPreview = this.trimToBudget(preparedContent, PREPARED_PREVIEW_MAX_CHARS)
+
+    return {
+      documentId: record.id,
+      preparedPath,
+      preparedPreview,
+      preparedLength: preparedContent.length,
+      totalChunks: relatedVectors.length,
+      chunkPreviews,
+      preparedMissing: !preparedPath || !fs.existsSync(preparedPath)
+    } satisfies KnowledgeDocumentInsights
+  }
+
   async ingestDocument(
     filePath: string,
-    onProgress?: (event: KnowledgeProgressEvent) => void
+    onProgress?: (event: KnowledgeProgressEvent) => void,
+    options?: { force?: boolean }
   ): Promise<KnowledgeDocumentRecord | null> {
     if (!this.vectorStore) {
       throw new Error('Base de conhecimento LangChain ainda não inicializada.')
@@ -220,7 +364,8 @@ export class KnowledgeBase {
     }
 
     const existingRecord = this.findRecord(resolvedPath)
-    if (existingRecord?.status === 'ready') {
+    const shouldForceReindex = Boolean(options?.force)
+    if (existingRecord?.status === 'ready' && !shouldForceReindex) {
       onProgress?.({
         type: 'document-skipped',
         record: existingRecord,
@@ -243,6 +388,9 @@ export class KnowledgeBase {
     }
 
     this.activeDocuments.add(resolvedPath)
+    if (shouldForceReindex && existingRecord) {
+      this.removeVectorsForDocument(existingRecord.id)
+    }
     this.upsertRecord(baseRecord)
     this.saveManifest()
     onProgress?.({ type: 'document-started', record: baseRecord })
@@ -519,15 +667,173 @@ export class KnowledgeBase {
     }
   }
 
-  private async restoreVectorStore() {
-    if (!this.vectorStore || !fs.existsSync(this.memoryPath)) {
+  private openDatabase() {
+    try {
+      this.database = new Database(this.databasePath)
+      this.database.pragma('journal_mode = WAL')
+      this.database.pragma('synchronous = NORMAL')
+      this.database.exec(`
+        CREATE TABLE IF NOT EXISTS documents (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          path TEXT NOT NULL,
+          type TEXT NOT NULL,
+          status TEXT NOT NULL,
+          indexed_at TEXT,
+          size INTEGER NOT NULL DEFAULT 0,
+          chunks INTEGER NOT NULL DEFAULT 0,
+          last_error TEXT NOT NULL DEFAULT ''
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_path ON documents(path);
+        CREATE TABLE IF NOT EXISTS vectors (
+          id TEXT PRIMARY KEY,
+          page_content TEXT NOT NULL,
+          metadata_json TEXT NOT NULL,
+          embedding_json TEXT NOT NULL
+        );
+      `)
+    } catch (error) {
+      throw buildDiagnosticError(
+        'KnowledgeBase.openDatabase',
+        { databasePath: this.databasePath },
+        error
+      )
+    }
+  }
+
+  private getDatabase(): Database.Database {
+    if (!this.database) {
+      throw new Error('Banco local da KnowledgeBase ainda não inicializado.')
+    }
+
+    return this.database
+  }
+
+  private getPersistedVectorCount() {
+    const row = this.getDatabase().prepare('SELECT COUNT(*) AS total FROM vectors').get() as
+      | { total?: number }
+      | undefined
+
+    return Number(row?.total ?? 0)
+  }
+
+  private async migrateLegacyStorageIfNeeded() {
+    if (this.processedFiles.length === 0 && fs.existsSync(this.legacyManifestPath)) {
+      try {
+        const legacyManifestRaw = fs.readFileSync(this.legacyManifestPath, 'utf-8')
+        const legacyManifestParsed = JSON.parse(legacyManifestRaw)
+        const legacyManifest = Array.isArray(legacyManifestParsed) ? legacyManifestParsed : []
+
+        if (legacyManifest.length > 0) {
+          this.processedFiles = legacyManifest.map((item) => this.normalizeRecord(item))
+          this.saveManifest()
+          console.log(
+            `[KnowledgeBase][SQLite] Migrated ${this.processedFiles.length} document records from legacy docs.json.`
+          )
+        }
+      } catch (error) {
+        console.error(
+          buildDiagnosticError(
+            'KnowledgeBase.migrateLegacyStorageIfNeeded',
+            { legacyManifestPath: this.legacyManifestPath },
+            error
+          )
+        )
+      }
+    }
+
+    if (this.getPersistedVectorCount() > 0 || !this.vectorStore || !fs.existsSync(this.legacyMemoryPath)) {
       return
     }
 
     try {
-      const raw = fs.readFileSync(this.memoryPath, 'utf-8')
+      const raw = fs.readFileSync(this.legacyMemoryPath, 'utf-8')
       const parsed = JSON.parse(raw)
       const records = Array.isArray(parsed) ? parsed : []
+
+      if (records.length === 0) {
+        return
+      }
+
+      const documents = records.map((record) => {
+        const metadata =
+          record?.metadata && typeof record.metadata === 'object' ? record.metadata : {}
+
+        return new Document({
+          pageContent: String(record?.pageContent ?? ''),
+          metadata,
+          id: record?.id ? String(record.id) : undefined
+        })
+      })
+      const vectors = records.map((record) =>
+        Array.isArray(record?.embedding) ? record.embedding.map((value) => Number(value)) : []
+      )
+
+      await this.vectorStore.addVectors(vectors, documents)
+      await this.saveToDisk()
+      console.log(`[KnowledgeBase][SQLite] Migrated ${records.length} vectors from legacy JSON.`)
+    } catch (error) {
+      console.error(
+        buildDiagnosticError(
+          'KnowledgeBase.migrateLegacyStorageIfNeeded',
+          { legacyMemoryPath: this.legacyMemoryPath },
+          error
+        )
+      )
+    }
+  }
+
+  private async restoreVectorStore() {
+    if (!this.vectorStore) {
+      return
+    }
+
+    try {
+      const rows = this.getDatabase()
+        .prepare(
+          `SELECT id, page_content AS pageContent, metadata_json AS metadataJson, embedding_json AS embeddingJson FROM vectors`
+        )
+        .all() as Array<{
+        id: string
+        pageContent: string
+        metadataJson: string
+        embeddingJson: string
+      }>
+
+      if (rows.length === 0) {
+        return
+      }
+
+      const records: PersistedVectorRecord[] = rows.map((row) => {
+        let metadata: Record<string, unknown> = {}
+        let embedding: number[] = []
+
+        try {
+          const parsedMetadata = JSON.parse(String(row.metadataJson ?? '{}'))
+          metadata =
+            parsedMetadata && typeof parsedMetadata === 'object'
+              ? (parsedMetadata as Record<string, unknown>)
+              : {}
+        } catch {
+          metadata = {}
+        }
+
+        try {
+          const parsedEmbedding = JSON.parse(String(row.embeddingJson ?? '[]'))
+          embedding = Array.isArray(parsedEmbedding)
+            ? parsedEmbedding.map((value) => Number(value))
+            : []
+        } catch {
+          embedding = []
+        }
+
+        return {
+          id: String(row.id),
+          pageContent: String(row.pageContent ?? ''),
+          metadata,
+          embedding
+        }
+      })
 
       if (records.length === 0) {
         return
@@ -537,8 +843,7 @@ export class KnowledgeBase {
         (record) =>
           new Document({
             pageContent: String(record.pageContent ?? ''),
-            metadata:
-              record.metadata && typeof record.metadata === 'object' ? record.metadata : {},
+            metadata: record.metadata && typeof record.metadata === 'object' ? record.metadata : {},
             id: record.id ? String(record.id) : undefined
           })
       )
@@ -547,12 +852,12 @@ export class KnowledgeBase {
       )
 
       await this.vectorStore.addVectors(vectors, documents)
-      console.log(`[KnowledgeBase][LangChain] Restored ${records.length} vectors from disk.`)
+      console.log(`[KnowledgeBase][SQLite] Restored ${records.length} vectors from local database.`)
     } catch (error) {
       console.error(
         buildDiagnosticError(
           'KnowledgeBase.restoreVectorStore',
-          { memoryPath: this.memoryPath },
+          { databasePath: this.databasePath },
           error
         )
       )
@@ -561,45 +866,80 @@ export class KnowledgeBase {
 
   private loadManifest() {
     try {
-      if (!fs.existsSync(this.manifestPath)) {
-        this.processedFiles = []
-        return
-      }
+      const rows = this.getDatabase()
+        .prepare(
+          `SELECT id, name, path, type, status, indexed_at AS indexedAt, size, chunks, last_error AS lastError FROM documents`
+        )
+        .all() as Array<Record<string, unknown>>
 
-      const data = fs.readFileSync(this.manifestPath, 'utf-8')
-      const parsed = JSON.parse(data)
-
-      this.processedFiles = Array.isArray(parsed)
-        ? parsed.map((item) => ({
-            id: String(item.id ?? item.path ?? item.name),
-            name: String(item.name ?? 'Documento'),
-            path: String(item.path ?? ''),
-            type: String(item.type ?? 'file'),
-            status: this.normalizeStatus(item.status),
-            indexedAt: item.indexedAt ? String(item.indexedAt) : null,
-            size: Number(item.size ?? 0),
-            chunks: Number(item.chunks ?? 0),
-            lastError: item.lastError ? String(item.lastError) : ''
-          }))
-        : []
+      this.processedFiles = rows.map((item) => this.normalizeRecord(item))
     } catch (error) {
-      console.error('[Manifest] Failed to read docs.json', error)
+      console.error('[Manifest] Failed to read documents from SQLite', error)
       this.processedFiles = []
     }
   }
 
   private saveManifest() {
     try {
-      fs.writeFileSync(this.manifestPath, JSON.stringify(this.processedFiles, null, 2))
+      const db = this.getDatabase()
+      const insert = db.prepare(
+        `INSERT INTO documents (id, name, path, type, status, indexed_at, size, chunks, last_error)
+         VALUES (@id, @name, @path, @type, @status, @indexedAt, @size, @chunks, @lastError)`
+      )
+
+      const persist = db.transaction((records: KnowledgeDocumentRecord[]) => {
+        db.prepare('DELETE FROM documents').run()
+
+        for (const record of records) {
+          insert.run({
+            id: record.id,
+            name: record.name,
+            path: record.path,
+            type: record.type,
+            status: record.status,
+            indexedAt: record.indexedAt,
+            size: record.size,
+            chunks: record.chunks,
+            lastError: record.lastError ?? ''
+          })
+        }
+      })
+
+      persist(this.processedFiles)
     } catch (error) {
-      console.error('[Manifest] Failed to save docs.json', error)
+      console.error('[Manifest] Failed to save documents to SQLite', error)
+    }
+  }
+
+  private normalizeRecord(item: Record<string, unknown>): KnowledgeDocumentRecord {
+    return {
+      id: String(item.id ?? item.path ?? item.name),
+      name: String(item.name ?? 'Documento'),
+      path: String(item.path ?? ''),
+      type: String(item.type ?? 'file'),
+      status: this.normalizeStatus(item.status),
+      indexedAt: item.indexedAt ? String(item.indexedAt) : null,
+      size: Number(item.size ?? 0),
+      chunks: Number(item.chunks ?? 0),
+      lastError: item.lastError ? String(item.lastError) : ''
     }
   }
 
   private normalizeStatus(value: unknown): KnowledgeDocumentStatus {
-    if (value === 'processing' || value === 'error' || value === 'ready') {
-      return value
+    if (
+      value === 'processing' ||
+      value === 'error' ||
+      value === 'ready' ||
+      value === 'reindex-required' ||
+      value === 'reindex_required'
+    ) {
+      return value === 'reindex_required' ? 'reindex-required' : value
     }
+
+    if (typeof value === 'string' && value.toLowerCase() === 'reindex-required') {
+      return 'reindex-required'
+    }
+
     return 'ready'
   }
 
@@ -611,6 +951,10 @@ export class KnowledgeBase {
     )
   }
 
+  private findRecordById(documentId: string): KnowledgeDocumentRecord | undefined {
+    return this.processedFiles.find((record) => record.id === String(documentId))
+  }
+
   private upsertRecord(record: KnowledgeDocumentRecord) {
     const index = this.processedFiles.findIndex((item) => item.id === record.id)
 
@@ -620,6 +964,70 @@ export class KnowledgeBase {
     }
 
     this.processedFiles.push(record)
+  }
+
+  private removeVectorsForDocument(documentId: string) {
+    if (!this.vectorStore) return
+
+    const currentVectors = this.vectorStore.memoryVectors
+    if (!Array.isArray(currentVectors) || currentVectors.length === 0) {
+      return
+    }
+
+    const keptVectors = currentVectors.filter((vector) => {
+      const metadata = (vector.metadata ?? {}) as Record<string, unknown>
+      return String(metadata.documentId ?? '') !== String(documentId)
+    })
+
+    currentVectors.splice(0, currentVectors.length, ...keptVectors)
+  }
+
+  private resolvePreparedPath(filePath: string): string {
+    return this.getFormatter().buildPreparedOutputPath(filePath)
+  }
+
+  private deletePreparedArtifact(filePath: string) {
+    const preparedPath = this.resolvePreparedPath(filePath)
+    if (!preparedPath || !fs.existsSync(preparedPath)) {
+      return
+    }
+
+    try {
+      fs.unlinkSync(preparedPath)
+    } catch (error) {
+      console.warn(
+        buildDiagnosticError(
+          'KnowledgeBase.deletePreparedArtifact',
+          { preparedPath, filePath },
+          error
+        )
+      )
+    }
+  }
+
+  private clearPreparedArtifacts() {
+    if (!this.preparedDocumentsDir || !fs.existsSync(this.preparedDocumentsDir)) {
+      return
+    }
+
+    try {
+      for (const entry of fs.readdirSync(this.preparedDocumentsDir)) {
+        const absolutePath = path.join(this.preparedDocumentsDir, entry)
+        const stat = fs.statSync(absolutePath)
+
+        if (stat.isFile()) {
+          fs.unlinkSync(absolutePath)
+        }
+      }
+    } catch (error) {
+      console.warn(
+        buildDiagnosticError(
+          'KnowledgeBase.clearPreparedArtifacts',
+          { preparedDocumentsDir: this.preparedDocumentsDir },
+          error
+        )
+      )
+    }
   }
 
   private async extractContent(filePath: string, extension: string): Promise<string> {
@@ -683,21 +1091,39 @@ export class KnowledgeBase {
     if (!this.vectorStore) return
 
     try {
-      const records: PersistedVectorRecord[] = this.vectorStore.memoryVectors.map((vector) => ({
-        id: vector.id,
+      const records: PersistedVectorRecord[] = this.vectorStore.memoryVectors.map((vector, index) => ({
+        id: vector.id ? String(vector.id) : `vec-${index}`,
         pageContent: String(vector.content ?? ''),
         metadata: vector.metadata ?? {},
         embedding: Array.isArray(vector.embedding) ? vector.embedding : []
       }))
 
-      fs.writeFileSync(this.memoryPath, JSON.stringify(records, null, 2), 'utf-8')
+      const db = this.getDatabase()
+      const insert = db.prepare(
+        `INSERT INTO vectors (id, page_content, metadata_json, embedding_json)
+         VALUES (@id, @pageContent, @metadataJson, @embeddingJson)`
+      )
+      const persist = db.transaction((items: PersistedVectorRecord[]) => {
+        db.prepare('DELETE FROM vectors').run()
+
+        for (const item of items) {
+          insert.run({
+            id: item.id,
+            pageContent: item.pageContent,
+            metadataJson: JSON.stringify(item.metadata ?? {}),
+            embeddingJson: JSON.stringify(item.embedding ?? [])
+          })
+        }
+      })
+
+      persist(records)
       console.log(
-        `[KnowledgeBase][LangChain] Saved ${records.length} vectors to ${this.memoryPath}.`
+        `[KnowledgeBase][SQLite] Saved ${records.length} vectors to local database.`
       )
     } catch (error) {
       throw buildDiagnosticError(
         'KnowledgeBase.saveToDisk',
-        { memoryPath: this.memoryPath },
+        { databasePath: this.databasePath },
         error
       )
     }

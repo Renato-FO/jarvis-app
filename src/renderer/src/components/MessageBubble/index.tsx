@@ -33,6 +33,26 @@ export const MessageBubble = memo(
           ) : (
             <MarkdownRenderer content={displayContent} />
           )}
+          {isJarvis && !message.isStreaming && Array.isArray(message.sources) && message.sources.length > 0 ? (
+            <div className="mt-3 rounded-2xl border border-cyan-300/14 bg-slate-950/45 p-3">
+              <span className="mb-2 block text-[10px] font-semibold uppercase tracking-[0.26em] text-cyan-200/70">
+                Fontes usadas
+              </span>
+              <div className="flex flex-col gap-2">
+                {message.sources.map((source) => (
+                  <div
+                    key={`${message.id}-${source.id}-${source.source}`}
+                    className="rounded-xl border border-cyan-300/14 bg-slate-900/50 px-3 py-2"
+                  >
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-cyan-100/80">
+                      {source.id}
+                    </p>
+                    <p className="text-sm text-slate-200">{source.source}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
         </div>
       </div>
     )

@@ -20,3 +20,14 @@ export interface OllamaRuntimeStatus {
   embeddingModelLoaded: boolean
   lastError: string | null
 }
+
+export interface RuntimePerformanceSnapshot {
+  timestampMs: number
+  cpuUserMicros: number
+  cpuSystemMicros: number
+  cpuCount: number
+  rssBytes: number
+  heapUsedBytes: number
+  heapTotalBytes: number
+  externalBytes: number
+}

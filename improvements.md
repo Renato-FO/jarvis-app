@@ -1,6 +1,6 @@
 # Improvements for jarvis-app
 
-## Visao atual (2026-03-17)
+## Visao atual (2026-03-18)
 
 O Jarvis evoluiu de um chat local para um nucleo documental com memoria treinavel, runtime local de IA e interface centrada no `Central Core`.
 
@@ -64,6 +64,16 @@ Prioridades ativas:
 - `Fontes:` somente quando contexto recuperado foi realmente usado.
 - Retrieval factual com fallback progressivo para reduzir casos sem contexto util.
 
+### Produto e transparencia da memoria
+
+- `Memory Bay` operacional para remover documentos.
+- `Memory Bay` operacional para reprocessar documentos.
+- `Memory Bay` operacional para limpar toda a base.
+- Preview de documento preparado disponivel por documento.
+- Preview de chunks indexados disponivel por documento.
+- Status de reindexacao mais explicito no fluxo.
+- Fontes usadas exibidas diretamente na UI de resposta.
+
 ### Runtime e estabilidade
 
 - Validacao de ambiente Ollama no boot.
@@ -106,30 +116,27 @@ Melhorias desejadas:
 
 ### 3. Transparencia da memoria para o usuario
 
-Melhorias desejadas:
-
-- preview de documento preparado e chunks
-- fontes usadas visiveis direto na UI de resposta
-- status de reindexacao mais explicito no fluxo
+Status: resolvido na rodada atual.
 
 ## Prioridades recomendadas (proxima fase)
 
-### Prioridade 1: estabilizacao final de performance
+### Prioridade 1: qualidade de resposta documental
 
-- implementar modo economico do nucleo durante resposta
-- revisar tamanho de lote de streaming por perfil de maquina
-- medir FPS/tempo de frame em cenarios longos
-
-### Prioridade 2: qualidade de resposta documental
-
-- evoluir ranking factual
-- exibir fontes na interface
+- melhorar ranking factual com filtros por documento/colecao
+- evoluir para estrategia hibrida (`keyword` + semantica)
+- adicionar reranking mais forte
 - reduzir chance de respostas genericas quando houver contexto util
 
-### Prioridade 3: operacao completa da memoria
+### Prioridade 2: estabilizacao adicional de performance
 
-- remover/reprocessar/limpar documentos
-- painel real de prepared/chunks por documento
+- continuar calibracao para hardware mais fraco em respostas longas
+- ajustar dinamicamente flush interval por carga real
+- validar latencia/FPS em cenarios extensos de uso
+
+### Prioridade 3: refinamento de produto
+
+- evoluir governanca da memoria (colecoes, filtros e auditoria de contexto)
+- melhorar UX de operacao em bases grandes
 
 ## Resultado esperado
 

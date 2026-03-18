@@ -5,6 +5,7 @@ import { MessageBubble } from './components/MessageBubble'
 import { useJarvis } from './hooks/useJarvis'
 import { useKnowledgeBase } from './hooks/useKnowledgeBase'
 import { useRuntimeStatus } from './hooks/useRuntimeStatus'
+import { KnowledgeDocumentStatus } from './types/knowledge'
 
 type OverlayPanel = 'memory' | 'dialogue' | 'status' | null
 
@@ -34,11 +35,30 @@ function formatIndexedAt(value: string | null) {
   })
 }
 
+function getDocumentStatusLabel(status: KnowledgeDocumentStatus) {
+  if (status === 'ready') return 'pronto'
+  if (status === 'processing') return 'processando'
+  if (status === 'reindex-required') return 'reindexar'
+  return 'erro'
+}
+
 function App() {
   const { messages, sendMessage, isProcessing } = useJarvis()
-  const { state, activity, isImporting, importDocuments } = useKnowledgeBase()
+  const {
+    state,
+    activity,
+    isImporting,
+    importDocuments,
+    removeDocument,
+    reprocessDocument,
+    clearDocuments,
+    loadDocumentInsights,
+    insightsByDocument,
+    insightLoadingByDocument
+  } = useKnowledgeBase()
   const runtimeStatus = useRuntimeStatus()
   const [activePanel, setActivePanel] = useState<OverlayPanel>(null)
+  const [expandedDocumentId, setExpandedDocumentId] = useState<string | null>(null)
   const endRef = useRef<HTMLDivElement>(null)
   const safeMessages = Array.isArray(messages) ? messages : []
   const safeDocuments = Array.isArray(state.documents) ? state.documents : []
@@ -46,6 +66,7 @@ function App() {
     (count, message) => (message.sender === 'user' ? count + 1 : count),
     0
   )
+  const isKnowledgeBusy = isImporting || state.stats.processingDocuments > 0
 
   useEffect(() => {
     if (activePanel !== 'dialogue') return
@@ -66,6 +87,15 @@ function App() {
     }
   }, [])
 
+  useEffect(() => {
+    if (!expandedDocumentId) return
+
+    const stillExists = safeDocuments.some((document) => document.id === expandedDocumentId)
+    if (!stillExists) {
+      setExpandedDocumentId(null)
+    }
+  }, [expandedDocumentId, safeDocuments])
+
   const togglePanel = (panel: Exclude<OverlayPanel, null>) => {
     setActivePanel((current) => (current === panel ? null : panel))
   }
@@ -75,7 +105,13 @@ function App() {
   const activityLabel =
     activity?.type === 'chunk-progress'
       ? `${activity.current ?? 0}/${activity.total ?? 0} fragmentos analisados`
-      : activity?.message || activity?.error || 'Importe documentos para ativar a memória.'
+      : activity?.type === 'document-reprocess-started'
+        ? activity.message || 'Reprocessando documento'
+        : activity?.type === 'document-removed'
+          ? activity.message || 'Documento removido'
+          : activity?.type === 'memory-cleared'
+            ? activity.message || 'Memoria limpa'
+            : activity?.message || activity?.error || 'Importe documentos para ativar a memoria.'
 
   const runtimeLabel =
     runtimeStatus.phase === 'ready'
@@ -91,13 +127,13 @@ function App() {
   const neuralStatus = isImporting
     ? activity?.record?.name
       ? `Treinando ${activity.record.name}`
-      : 'Treinando memória'
+      : 'Treinando memoria'
     : isProcessing
       ? 'Processando consulta'
       : runtimeStatus.phase === 'error'
         ? runtimeLabel
         : state.stats.indexedDocuments > 0
-          ? 'Memória operacional'
+          ? 'Memoria operacional'
           : 'Aguardando documentos'
 
   const isOverlayOpen = activePanel !== null
@@ -111,16 +147,10 @@ function App() {
 
   const overlaySubtitle =
     activePanel === 'memory'
-      ? 'Gerencie documentos, treinamento e atividade recente.'
+      ? 'Gerencie documentos, reindexacao e atividade recente.'
       : activePanel === 'dialogue'
-        ? 'Abra o canal de conversa e fale com o núcleo.'
-        : 'Veja o estado atual do Ollama, dos modelos e da memória.'
-
-  const quickPrompts = [
-    'Resuma o que já existe na memória.',
-    'Quais fontes estão disponíveis agora?',
-    'Como você usaria os documentos para responder melhor?'
-  ]
+        ? 'Conversa direta com o nucleo.'
+        : 'Veja o estado atual do Ollama, dos modelos e da memoria.'
 
   const shortcuts = [
     {
@@ -129,14 +159,14 @@ function App() {
       value: isImporting ? 'Treinando base' : `${state.stats.indexedDocuments} docs`,
       meta:
         highlightedDocument?.name ||
-        (state.stats.indexedDocuments > 0 ? 'Memória pronta' : 'Nenhum documento treinado'),
+        (state.stats.indexedDocuments > 0 ? 'Memoria pronta' : 'Nenhum documento treinado'),
       tone: isImporting ? 'is-busy' : state.stats.indexedDocuments > 0 ? 'is-ready' : ''
     },
     {
       id: 'dialogue' as const,
       title: 'Dialogue Layer',
-      value: isProcessing ? 'Em resposta' : 'Abrir canal',
-      meta: `${messages.length} mensagens em sessão`,
+      value: isProcessing ? 'Em resposta' : 'Pronto',
+      meta: `${messages.length} mensagens em sessao`,
       tone: isProcessing ? 'is-busy' : ''
     },
     {
@@ -152,6 +182,39 @@ function App() {
             : 'is-busy'
     }
   ]
+
+  const handleToggleDocumentDetails = (documentId: string) => {
+    setExpandedDocumentId((current) => {
+      if (current === documentId) {
+        return null
+      }
+
+      void loadDocumentInsights(documentId)
+      return documentId
+    })
+  }
+
+  const handleRemoveDocument = async (documentId: string, documentName: string) => {
+    const shouldRemove = window.confirm(
+      `Remover "${documentName}" da memoria?\n\nIsso apaga os chunks indexados deste documento.`
+    )
+    if (!shouldRemove) return
+    await removeDocument(documentId)
+  }
+
+  const handleReprocessDocument = async (documentId: string) => {
+    await reprocessDocument(documentId)
+    await loadDocumentInsights(documentId, true)
+  }
+
+  const handleClearDocuments = async () => {
+    const shouldClear = window.confirm(
+      'Limpar toda a memoria?\n\nIsso remove todos os documentos e vetores da base local.'
+    )
+    if (!shouldClear) return
+    await clearDocuments()
+    setExpandedDocumentId(null)
+  }
 
   return (
     <div className="jarvis-shell">
@@ -179,7 +242,7 @@ function App() {
           <div className="core-header">
             <div>
               <p className="panel-heading__eyebrow">Central Core</p>
-              <h1 className="core-header__title">Cérebro operacional do Jarvis</h1>
+              <h1 className="core-header__title">Cerebro operacional do Jarvis</h1>
             </div>
             <div className="core-header__actions">
               <div className="core-header__badge">{runtimeStatus.message || neuralStatus}</div>
@@ -192,7 +255,7 @@ function App() {
                 <button
                   key={shortcut.id}
                   type="button"
-                  className={`core-shortcuts__button core-shortcuts__button--${shortcut.id} ${
+                  className={`core-shortcuts__button cursor-pointer core-shortcuts__button--${shortcut.id} ${
                     activePanel === shortcut.id ? 'is-active' : ''
                   } ${shortcut.tone}`}
                   onClick={() => togglePanel(shortcut.id)}
@@ -207,6 +270,7 @@ function App() {
             <HolographicBrain
               isThinking={isProcessing}
               isTraining={isImporting}
+              isEconomicMode={isProcessing}
               indexedDocuments={state.stats.indexedDocuments}
               totalChunks={state.stats.totalChunks}
               statusLabel={neuralStatus}
@@ -228,7 +292,7 @@ function App() {
                 </div>
                 <button
                   type="button"
-                  className="action-button action-button--small"
+                  className="action-button action-button--small cursor-pointer"
                   onClick={() => setActivePanel(null)}
                 >
                   Fechar
@@ -248,19 +312,33 @@ function App() {
                         <small>em fila</small>
                       </span>
                       <span className="memory-inline-stats__pill">
+                        <strong>{state.stats.reindexDocuments}</strong>
+                        <small>reindex</small>
+                      </span>
+                      <span className="memory-inline-stats__pill">
                         <strong>{state.stats.erroredDocuments}</strong>
                         <small>falhas</small>
                       </span>
                     </div>
 
-                    <button
-                      type="button"
-                      onClick={() => void importDocuments()}
-                      className="action-button"
-                      disabled={isImporting}
-                    >
-                      {isImporting ? 'Treinando...' : 'Adicionar arquivos'}
-                    </button>
+                    <div className="memory-toolbar-actions">
+                      <button
+                        type="button"
+                        onClick={() => void importDocuments()}
+                        className="action-button cursor-pointer"
+                        disabled={isImporting}
+                      >
+                        {isImporting ? 'Treinando...' : 'Adicionar arquivos'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleClearDocuments()}
+                        className="action-button action-button--ghost cursor-pointer"
+                        disabled={isKnowledgeBusy || state.documents.length === 0}
+                      >
+                        Limpar base
+                      </button>
+                    </div>
                   </div>
 
                   <div className="memory-activity">
@@ -273,33 +351,121 @@ function App() {
                       <div className="empty-card">
                         <p className="empty-card__title">Nenhum documento treinado</p>
                         <p className="empty-card__text">
-                          Traga PDFs, Markdown, TXT, JSON ou código para começar a montar a memória
+                          Traga PDFs, Markdown, TXT, JSON ou codigo para comecar a montar a memoria
                           do Jarvis.
                         </p>
                       </div>
                     ) : (
-                      state.documents.map((document) => (
-                        <article
-                          key={document.id}
-                          className={`document-card status-${document.status}`}
-                        >
-                          <div className="document-card__header">
-                            <div>
-                              <h3>{document.name}</h3>
-                              <p>{document.type.toUpperCase()}</p>
+                      state.documents.map((document) => {
+                        const isExpanded = expandedDocumentId === document.id
+                        const insights = insightsByDocument[document.id]
+                        const isLoadingInsights = Boolean(insightLoadingByDocument[document.id])
+
+                        return (
+                          <article
+                            key={document.id}
+                            className={`document-card status-${document.status}`}
+                          >
+                            <div className="document-card__header">
+                              <div>
+                                <h3>{document.name}</h3>
+                                <p>{document.type.toUpperCase()}</p>
+                              </div>
+                              <span className="document-card__status">
+                                {getDocumentStatusLabel(document.status)}
+                              </span>
                             </div>
-                            <span className="document-card__status">{document.status}</span>
-                          </div>
-                          <div className="document-card__meta">
-                            <span>{formatBytes(document.size)}</span>
-                            <span>{document.chunks} chunks</span>
-                          </div>
-                          <div className="document-card__footer">
-                            <span>{formatIndexedAt(document.indexedAt)}</span>
-                            {document.lastError ? <span>{document.lastError}</span> : null}
-                          </div>
-                        </article>
-                      ))
+                            <div className="document-card__meta">
+                              <span>{formatBytes(document.size)}</span>
+                              <span>{document.chunks} chunks</span>
+                            </div>
+                            <div className="document-card__footer">
+                              <span>{formatIndexedAt(document.indexedAt)}</span>
+                              {document.lastError ? <span>{document.lastError}</span> : null}
+                            </div>
+
+                            <div className="document-card__actions">
+                              <button
+                                type="button"
+                                className="action-button action-button--small cursor-pointer"
+                                onClick={() => handleToggleDocumentDetails(document.id)}
+                              >
+                                {isExpanded ? 'Ocultar preview' : 'Ver preview'}
+                              </button>
+                              <button
+                                type="button"
+                                className="action-button action-button--small cursor-pointer"
+                                onClick={() => void handleReprocessDocument(document.id)}
+                                disabled={document.status === 'processing'}
+                              >
+                                Reprocessar
+                              </button>
+                              <button
+                                type="button"
+                                className="action-button action-button--small action-button--ghost cursor-pointer"
+                                onClick={() => void handleRemoveDocument(document.id, document.name)}
+                                disabled={document.status === 'processing'}
+                              >
+                                Remover
+                              </button>
+                            </div>
+
+                            {isExpanded ? (
+                              <div className="document-card__details">
+                                <section className="document-preview">
+                                  <div className="document-preview__heading">
+                                    <span>Documento preparado</span>
+                                    <small>
+                                      {insights?.preparedLength
+                                        ? `${insights.preparedLength} chars`
+                                        : 'Sem arquivo preparado'}
+                                    </small>
+                                  </div>
+                                  {isLoadingInsights ? (
+                                    <p className="document-preview__empty">Carregando preview...</p>
+                                  ) : insights?.preparedPreview ? (
+                                    <pre className="document-preview__content">
+                                      {insights.preparedPreview}
+                                    </pre>
+                                  ) : (
+                                    <p className="document-preview__empty">
+                                      Nenhum preview preparado disponivel.
+                                    </p>
+                                  )}
+                                </section>
+
+                                <section className="document-preview">
+                                  <div className="document-preview__heading">
+                                    <span>Chunks indexados</span>
+                                    <small>{insights?.totalChunks ?? 0} no total</small>
+                                  </div>
+                                  {isLoadingInsights ? (
+                                    <p className="document-preview__empty">Carregando chunks...</p>
+                                  ) : insights?.chunkPreviews?.length ? (
+                                    <div className="chunk-preview-list">
+                                      {insights.chunkPreviews.map((chunk) => (
+                                        <article key={chunk.id} className="chunk-preview-item">
+                                          <header>
+                                            <strong>
+                                              Chunk {chunk.chunkIndex + 1}.{chunk.childChunkIndex + 1}
+                                            </strong>
+                                            <small>{chunk.length} chars</small>
+                                          </header>
+                                          <p>{chunk.preview}</p>
+                                        </article>
+                                      ))}
+                                    </div>
+                                  ) : (
+                                    <p className="document-preview__empty">
+                                      Nenhum chunk indexado para este documento.
+                                    </p>
+                                  )}
+                                </section>
+                              </div>
+                            ) : null}
+                          </article>
+                        )
+                      })
                     )}
                   </div>
                 </div>
@@ -307,51 +473,24 @@ function App() {
 
               {activePanel === 'dialogue' ? (
                 <div className="overlay-drawer__content overlay-drawer__content--chat">
-                  <div className="panel-heading panel-heading--chat">
-                    <div>
-                      <p className="panel-heading__eyebrow">Canal de conversa</p>
-                      <h2 className="panel-heading__title">Converse com o núcleo</h2>
-                    </div>
-                    <div className="chat-status">
-                      {isProcessing ? 'Respondendo...' : 'Aguardando comando'}
-                    </div>
-                  </div>
-
                   <div className="chat-toolbar">
                     <div className="chat-toolbar__meta">
+                      <span>{isProcessing ? 'Respondendo...' : 'Pronto para conversar'}</span>
                       <span>{state.stats.indexedDocuments} docs ativos</span>
-                      <span>{messages.length} mensagens</span>
-                      <span>{state.stats.totalChunks} chunks</span>
                       <span>{runtimeLabel}</span>
                     </div>
-                    <div className="chat-toolbar__actions">
-                      {quickPrompts.map((prompt) => (
-                        <button
-                          key={prompt}
-                          type="button"
-                          className="chat-toolbar__prompt"
-                          onClick={() => sendMessage(prompt)}
-                          disabled={isProcessing}
-                        >
-                          {prompt}
-                        </button>
-                      ))}
-                    </div>
                   </div>
-
                   <div className="chat-stream">
                     {messages.length === 0 ? (
                       <div className="empty-card empty-card--chat">
                         <p className="empty-card__title">Pronto para conversar</p>
                         <p className="empty-card__text">
-                          Pergunte algo sobre seus documentos ou use este espaço para testar o
-                          núcleo mesmo antes de treinar a memória.
+                          Pergunte algo sobre seus documentos ou use este espaco para testar o
+                          nucleo mesmo antes de treinar a memoria.
                         </p>
                       </div>
                     ) : (
-                      messages.map((message) => (
-                        <MessageBubble key={message.id} message={message} />
-                      ))
+                      messages.map((message) => <MessageBubble key={message.id} message={message} />)
                     )}
                     <div ref={endRef} />
                   </div>
@@ -378,7 +517,7 @@ function App() {
                         {runtimeStatus.embeddingModelLoaded ? 'carregado' : 'em espera'}
                       </strong>
                       <p>
-                        Instalação: chat {runtimeStatus.chatModelInstalled ? 'ok' : 'pendente'} e
+                        Instalacao: chat {runtimeStatus.chatModelInstalled ? 'ok' : 'pendente'} e
                         embeddings {runtimeStatus.embeddingModelInstalled ? 'ok' : 'pendente'}.
                       </p>
                     </article>
@@ -388,10 +527,10 @@ function App() {
                       <strong>{highlightedDocument?.name || 'Nenhum documento destacado'}</strong>
                       <p>
                         {highlightedDocument
-                          ? `${highlightedDocument.chunks} chunks prontos. Última indexação em ${formatIndexedAt(
+                          ? `${highlightedDocument.chunks} chunks prontos. Ultima indexacao em ${formatIndexedAt(
                               highlightedDocument.indexedAt
                             )}.`
-                          : 'Adicione arquivos para que o núcleo comece a estruturar conhecimento.'}
+                          : 'Adicione arquivos para que o nucleo comece a estruturar conhecimento.'}
                       </p>
                     </article>
                   </div>
